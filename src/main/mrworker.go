@@ -29,6 +29,7 @@ func main() {
 
 // load the application Map and Reduce functions
 // from a plugin file, e.g. ../mrapps/wc.so
+// 从插件文件，即../mrapps/wc.so中加载Map与Reduce函数
 func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
 	p, err := plugin.Open(filename)
 	if err != nil {
