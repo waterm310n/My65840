@@ -169,3 +169,22 @@ bash test-mr-many.sh 10
 *** PASSED ALL TESTS
 *** PASSED ALL 10 TESTING TRIALS
 ```
+数据竞争测试没有出现问题
+```bash
+bash test-mr.sh quiet
+*** Starting wc test.
+--- wc test: PASS
+*** Starting indexer test.
+--- indexer test: PASS
+*** Starting map parallelism test.
+--- map parallelism test: PASS
+*** Starting reduce parallelism test.
+--- reduce parallelism test: PASS
+*** Starting job count test.
+--- job count test: PASS
+*** Starting early exit test.
+--- early exit test: PASS
+*** Starting crash test.
+--- crash test: PASS
+*** PASSED ALL TESTS
+```
