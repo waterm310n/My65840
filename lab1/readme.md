@@ -7,7 +7,7 @@
 coordinator和 worker 的main函数位于 main/mrCollaborator.go 和 main/mrworker.go 中，但不要更改这些文件。
 在`mr/coordinator.go`, `mr/worker.go`,和`mr/rpc.go`中完成代码实现.
 
-### 实验守则
+## 实验守则
 1. Map 阶段应该将中间结果划分到桶中，对应 `nReduce`个`reduce`任务 ，`nReduce` 是 `reduce` 任务的数量——在 `main/mrcoordinator.go`文件中`mr.MakeCoordinator(os.Args[1:], 10)`的第二个参数为`nReduce`，默认值是10。每个Map应该创建 `nReduce`个中间文件，以供`reduce`阶段使用。
 
 2. `worker`实现中，第X个`reduce`任务的输出文件命名为`mr-out-X`
@@ -161,4 +161,11 @@ bash test-mr.sh quiet #忽视coordinator与worker的输出
 unexpected EOF
 --- crash test: PASS
 *** PASSED ALL TESTS
+```
+我又额外跑了10次测试脚本，全部测试都通过了
+```bash
+bash test-mr-many.sh 10
+
+*** PASSED ALL TESTS
+*** PASSED ALL 10 TESTING TRIALS
 ```
