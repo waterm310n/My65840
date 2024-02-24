@@ -173,7 +173,7 @@ func (c *Coordinator) CompleteTask(request Request, message *Response) error {
 		//完成Reduce任务
 		c.reduceTaskQueue[request.TaskNum].taskState = COMPLETE
 		c.reduceTaskQueue[request.TaskNum].cancel()
-		log.Printf("coordinator: remainReduceTask %d to finish", c.remainMapTaskCount)
+		log.Printf("coordinator: remainReduceTask %d to finish", c.remainReduceTaskCount)
 		c.remainReduceTaskCount--
 		if c.remainReduceTaskCount == 0 {
 			//完成所有Reduce任务

@@ -88,4 +88,30 @@ func findNextTask(ptrTask int) *Task {
 ```
 判断任务超时，此处使用context，如果超时则重新设置任务状态为空闲
 ## 实验结果
-暂时只能通过部分tests，还有待修改
+已经通过的test
+```bash
+bash test-mr.sh > excuete.log
+# excute.log
+*** Starting wc test.
+--- wc test: PASS
+*** Starting indexer test.
+--- indexer test: PASS
+*** Starting map parallelism test.
+--- map parallelism test: PASS
+*** Starting reduce parallelism test.
+--- reduce parallelism test: PASS
+*** Starting job count test.
+--- map jobs ran incorrect number of times (8
+8
+...
+8 != 8)
+--- job count test: FAIL
+*** Starting early exit test.
+--- output changed after first worker exited
+--- early exit test: FAIL
+*** Starting crash test.
+mr-crash-all mr-correct-crash.txt differ: byte 1, line 1
+--- crash output is not the same as mr-correct-crash.txt
+--- crash test: FAIL
+*** FAILED SOME TESTS
+```
