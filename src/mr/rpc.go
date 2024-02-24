@@ -12,6 +12,7 @@ import (
 type Request struct {
 	TaskNum  int      //如果完成任务，那么是任务编号
 	TaskType TaskType //如果完成任务，那么是任务类型
+	ReduceList   []int    //完成Map任务的Worker通知Coordinator有哪些reduce任务未来需要处理
 }
 
 type Response struct {

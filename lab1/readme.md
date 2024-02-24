@@ -90,8 +90,8 @@ func findNextTask(ptrTask int) *Task {
 ## 实验结果
 已经通过的test
 ```bash
-bash test-mr.sh > excuete.log
-# excute.log
+bash test-mr.sh quiet #忽视coordinator与worker的输出
+
 *** Starting wc test.
 --- wc test: PASS
 *** Starting indexer test.
@@ -114,4 +114,51 @@ mr-crash-all mr-correct-crash.txt differ: byte 1, line 1
 --- crash output is not the same as mr-correct-crash.txt
 --- crash test: FAIL
 *** FAILED SOME TESTS
+```
+能够看到出错的位置在jobCount，于是我手动执行了一遍，我发现理论上是没有问题的，但是我的输出打印了很多遍8。因此我仔细阅读了test-mr.sh中关于jobCount位置的测试代码。代码如下
+```bash
+echo '***' Starting job count test.
+# 删除输出文件
+rm -f mr-*
+# 执行coordinator
+maybe_quiet $TIMEOUT ../mrcoordinator ../pg*txt  &
+sleep 1
+# 运行worker
+maybe_quiet $TIMEOUT ../mrworker ../../mrapps/jobcount.so &
+maybe_quiet $TIMEOUT ../mrworker ../../mrapps/jobcount.so
+maybe_quiet $TIMEOUT ../mrworker ../../mrapps/jobcount.so &
+maybe_quiet $TIMEOUT ../mrworker ../../mrapps/jobcount.so
+# 判断结果是否为8
+NT=`cat mr-out* | awk '{print $2}'`
+if [ "$NT" -eq "8" ]
+then
+  echo '---' job count test: PASS
+else
+  echo '---' map jobs ran incorrect number of times "($NT != 8)"
+  echo '---' job count test: FAIL
+  failed_any=1
+fi
+
+wait
+```
+因此可知，测试脚本只会主动清理输出文件。我首次编写的程序产生的副作用代码需要自己管理，而我的reduce任务分配处理方式是直接遍历reduce，也就是说即使有reduce没必要处理我也会读取，这导致我会读取到前次任务的结果导致出错。因此我修改了coordinator与map之间的策略。现在request还会带上有哪些reduce任务需要完成。修改后成功通过测试,不过有unexpected EOF错误，可能是打印操作造成的，如果有空再回来修复这个问题。
+```bash
+bash test-mr.sh quiet #忽视coordinator与worker的输出
+
+*** Starting wc test.
+--- wc test: PASS
+*** Starting indexer test.
+--- indexer test: PASS
+*** Starting map parallelism test.
+--- map parallelism test: PASS
+*** Starting reduce parallelism test.
+--- reduce parallelism test: PASS
+*** Starting job count test.
+--- job count test: PASS
+*** Starting early exit test.
+--- early exit test: PASS
+*** Starting crash test.
+unexpected EOF
+--- crash test: PASS
+*** PASSED ALL TESTS
 ```

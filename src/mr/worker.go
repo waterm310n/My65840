@@ -45,6 +45,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 	message := Response{}
 	ok := call("Coordinator.GetTask", 0, &message)
+	//如果工作者无法连接上coordinator就自己结束
 	for ok {
 		switch message.TaskType {
 		case MAP:
@@ -55,12 +56,13 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Println("worker: nothing to do temporarily")
 			time.Sleep(2 * time.Second)
 		case FINISH:
-			log.Println("worker: worker died")
+			log.Println("worker: received job finish msg,so worker died")
 			return
 		}
 		message = Response{}
 		ok = call("Coordinator.GetTask", 0, &message)
 	}
+	log.Println("worker: cant connect to coordinator,so worker died")
 }
 
 // 判断文件或目录是否存在
@@ -72,14 +74,26 @@ func checkFileOrDirectoryExist(path string) bool {
 }
 
 // 生成写json文件的Handle
-func createWriteFileHandle(taskNum int, NReduce int) []*json.Encoder {
-	res := make([]*json.Encoder, NReduce)
+func createWriteFileHandle(taskNum int, NReduce int) []struct {
+	file *os.File
+	enc  *json.Encoder
+} {
+	res := make([]struct {
+		file *os.File
+		enc  *json.Encoder
+	}, NReduce)
 	return res
 }
 
 // 生成读json文件的Handle
-func createReadFileHandle(taskNum int) []*json.Decoder {
-	res := make([]*json.Decoder, 0)
+func createReadFileHandle(taskNum int) []struct {
+	file *os.File
+	dec  *json.Decoder
+} {
+	res := []struct {
+		file *os.File
+		dec  *json.Decoder
+	}{}
 	err := filepath.Walk("intermediate", func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			log.Fatalf("prevent panic by handling failure accessing a path %q: %v\n", path, err)
@@ -89,11 +103,17 @@ func createReadFileHandle(taskNum int) []*json.Decoder {
 		parts := strings.Split(fileName, "-")
 		num, _ := strconv.Atoi(parts[len(parts)-1])
 		if num == taskNum {
-			file, err := os.Open(path)
+			inFile, err := os.Open(path)
 			if err != nil {
 				log.Fatalf("cannot open file %s,error %s", path, err.Error())
 			}
-			res = append(res, json.NewDecoder(file))
+			res = append(res, struct {
+				file *os.File
+				dec  *json.Decoder
+			}{
+				file: inFile,
+				dec:  json.NewDecoder(inFile),
+			})
 		}
 		return nil
 	})
@@ -105,6 +125,12 @@ func createReadFileHandle(taskNum int) []*json.Decoder {
 
 // Map阶段
 func Map(mapf func(string, string) []KeyValue, msg *Response) error {
+	if !checkFileOrDirectoryExist("intermediate") {
+		if err := os.Mkdir("intermediate", 0755); err != nil {
+			log.Fatal(err)
+			panic("can not mkdir intermediate")
+		}
+	}
 	intermediate := []KeyValue{}
 	for _, filename := range msg.Files {
 		file, err := os.Open(filename)
@@ -118,30 +144,40 @@ func Map(mapf func(string, string) []KeyValue, msg *Response) error {
 		file.Close()
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
-	}
-	if !checkFileOrDirectoryExist("intermediate") {
-		if err := os.Mkdir("intermediate", 0755); err != nil {
-			log.Fatal(err)
-			panic("can not mkdir intermediate")
-		}
+
 	}
 	nReduce := msg.NReduce
 	handles := createWriteFileHandle(msg.TaskNum, nReduce)
+	reduceNeedToFinishMp := make(map[int]bool)
 	//将结果以json的形式写入文件中
 	for _, v := range intermediate {
 		reduceNum := ihash(v.Key) % nReduce
-		if handles[reduceNum] == nil {
-			file, err := os.Create(filepath.Join("intermediate", fmt.Sprintf("mr-%d-%d", msg.TaskNum, reduceNum)))
+		if handles[reduceNum].file == nil {
+			file, err := ioutil.TempFile("intermediate", "")
 			if err != nil {
 				log.Fatal(err)
 			}
-			handles[reduceNum] = json.NewEncoder(file)
+			//确保关闭文件描述符
+			defer file.Close()
+			handles[reduceNum].file = file
+			handles[reduceNum].enc = json.NewEncoder(file)
 		}
-		handles[reduceNum].Encode(&v)
+		handles[reduceNum].enc.Encode(&v)
+		reduceNeedToFinishMp[reduceNum] = true
+	}
+	for i, handle := range handles {
+		if handle.file != nil {
+			os.Rename(handle.file.Name(), filepath.Join("intermediate", fmt.Sprintf("mr-%d-%d", msg.TaskNum, i)))
+		}
+	}
+	reduceNeedToFinishList := []int{}
+	for key := range reduceNeedToFinishMp {
+		reduceNeedToFinishList = append(reduceNeedToFinishList, key)
 	}
 	request := Request{
-		TaskNum:  msg.TaskNum,
-		TaskType: msg.TaskType,
+		TaskNum:    msg.TaskNum,
+		TaskType:   msg.TaskType,
+		ReduceList: reduceNeedToFinishList,
 	}
 	if ok := call("Coordinator.CompleteTask", request, nil); ok {
 		log.Printf("worker: finished map task %d", msg.TaskNum)
@@ -158,6 +194,12 @@ func Reduce(reducef func(string, []string) string, msg *Response) error {
 		}
 	}
 	handles := createReadFileHandle(msg.TaskNum)
+	//确保关闭文件描述符
+	for _, handle := range handles {
+		if handle.file != nil {
+			defer handle.file.Close()
+		}
+	}
 	ofile, err := os.Create(fmt.Sprintf("mr-out-%d", msg.TaskNum))
 	if err != nil {
 		log.Fatal(err)
@@ -166,7 +208,7 @@ func Reduce(reducef func(string, []string) string, msg *Response) error {
 	for _, handle := range handles {
 		for {
 			var kv KeyValue
-			if err := handle.Decode(&kv); err != nil {
+			if err := handle.dec.Decode(&kv); err != nil {
 				break
 			}
 			kva = append(kva, kv)

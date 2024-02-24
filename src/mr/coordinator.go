@@ -164,9 +164,18 @@ func (c *Coordinator) CompleteTask(request Request, message *Response) error {
 		c.mapTaskQueue[request.TaskNum].cancel()
 		log.Printf("coordinator: remainMapTask %d to finish", c.remainMapTaskCount)
 		c.remainMapTaskCount--
+		for _, taskNum := range request.ReduceList {
+			c.reduceTaskQueue[taskNum].taskState = IDLE
+		}
 		if c.remainMapTaskCount == 0 {
 			//完成所有Map任务
 			log.Print("coordinator: all map tasks finished")
+			c.remainReduceTaskCount = 0
+			for _, task := range c.reduceTaskQueue {
+				if task.taskState == IDLE {
+					c.remainReduceTaskCount++
+				}
+			}
 			c.curPtrTask = 0
 		}
 	} else {
@@ -222,12 +231,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.mapTaskQueue = append(c.mapTaskQueue, &Task{fileName: fileName, taskState: IDLE, taskType: MAP, taskNum: i})
 	}
 	c.totalMapTask = len(c.mapTaskQueue)
-	//我的理解是nReduce是多少就代表有多少个输出文件，因此只需要最多nReduce个worker执行程序
+	//我的理解是nReduce是多少就代表有多少个输出文件，因此只需要最多nReduce个worker执行程序，一开始先设置为完成
+	// 每一个map任务结束后，如果有要做的任务在设为IDLE
 	for i := 0; i < nReduce; i++ {
-		c.reduceTaskQueue = append(c.reduceTaskQueue, &Task{taskState: IDLE, taskType: REDUCE, taskNum: i})
+		c.reduceTaskQueue = append(c.reduceTaskQueue, &Task{taskState: COMPLETE, taskType: REDUCE, taskNum: i})
 	}
 	c.totalReduceTask = nReduce
 	c.remainMapTaskCount = c.totalMapTask
+	// 随便初始化一个非零值，要完成的reduce任务数量
 	c.remainReduceTaskCount = nReduce
 	c.curPtrTask = 0
 	c.nReduce = nReduce
