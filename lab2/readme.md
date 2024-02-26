@@ -41,6 +41,41 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// do something
 }
 ```
+对于实验要求2 有网络故障的K/VV服务器
+对此容易想到计算机网络中的TCP协议。
+
+因此这里的实现选择的是让client判断接收消息是否超时，如果超时则重发。
+
+而重发就有可能导致二次写入，因此需要为每一次的写操作添加一个标识符ID，如果同样ID的写操作被服务器看到就会丢弃。为了避免占用过程内存，我让每次client执行完后，通知server删除对应的标识符ID。主要结构与函数如下所示
+```go
+// Put or Append
+type PutAppendArgs struct {
+	...
+	Id int64 //getArgs中也有类似的域
+}
+
+//主动请求删除
+func (ck *Clerk) Get(key string) string {
+	// You will have to modify this function.
+	// do something
+	if ok {
+		//成功返回值,调用函数删除
+		ck.DeleteId(args.Id)
+		return reply.Value
+	}
+	return ""
+}
+
+//删除函数
+func (ck *Clerk) DeleteId(id int64) {
+	args := DeleteArgs{Id: id}
+	reply := DeleteReply{}
+	ok := ck.server.Call("KVServer.DeleteId", &args, &reply)
+	for !ok {
+		ok = ck.server.Call("KVServer.DeleteId", &args, &reply)
+	}
+}
+```
 
 ## 实验结果
 ### 实验要求1
@@ -56,3 +91,28 @@ Test: unreliable net, many clients ...
 ...
 ```
 ### 实验要求2
+使用client调用删除方法删除server中过时的id的方法执行结果如下
+```bash
+~/6.5840/src/kvsrv$ go test
+Test: one client ...
+  ... Passed -- t  3.6 nrpc 60214 ops 30107
+Test: many clients ...
+  ... Passed -- t  4.4 nrpc 217002 ops 108501
+Test: unreliable net, many clients ...
+  ... Passed -- t  3.6 nrpc  1185 ops  472
+Test: concurrent append to same key, unreliable ...
+  ... Passed -- t  0.4 nrpc   125 ops   52
+Test: memory use get ...
+  ... Passed -- t  1.2 nrpc    10 ops    0
+Test: memory use put ...
+  ... Passed -- t  0.6 nrpc     4 ops    0
+Test: memory use append ...
+  ... Passed -- t  1.4 nrpc     4 ops    0
+Test: memory use many puts ...
+  ... Passed -- t 86.0 nrpc 2000002 ops    0
+Test: memory use many gets ...
+2024/02/26 19:22:17 mem m0 452680 m1 456680
+  ... Passed -- t 11.5 nrpc 200002 ops    0
+PASS
+ok      6.5840/kvsrv    112.730s
+```

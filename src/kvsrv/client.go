@@ -38,11 +38,15 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	args := GetArgs{Key: key}
+	args := GetArgs{Key: key, Id: nrand()}
 	reply := GetReply{}
 	ok := ck.server.Call("KVServer.Get", &args, &reply)
+	for !ok {
+		ok = ck.server.Call("KVServer.Get", &args, &reply)
+	}
 	if ok {
 		//成功返回值
+		ck.DeleteId(args.Id)
 		return reply.Value
 	}
 	return ""
@@ -58,10 +62,14 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	args := PutAppendArgs{key, value}
+	args := PutAppendArgs{key, value, nrand()}
 	reply := PutAppendReply{}
 	ok := ck.server.Call("KVServer."+op, &args, &reply)
+	for !ok {
+		ok = ck.server.Call("KVServer."+op, &args, &reply)
+	}
 	if ok {
+		ck.DeleteId(args.Id)
 		return reply.Value
 	}
 	return ""
@@ -74,4 +82,13 @@ func (ck *Clerk) Put(key string, value string) {
 // Append value to key's value and return that value
 func (ck *Clerk) Append(key string, value string) string {
 	return ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) DeleteId(id int64) {
+	args := DeleteArgs{Id: id}
+	reply := DeleteReply{}
+	ok := ck.server.Call("KVServer.DeleteId", &args, &reply)
+	for !ok {
+		ok = ck.server.Call("KVServer.DeleteId", &args, &reply)
+	}
 }
