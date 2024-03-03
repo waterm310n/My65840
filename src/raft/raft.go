@@ -29,6 +29,8 @@ import (
 	"6.5840/labrpc"
 )
 
+const HEARTBEATETIME = time.Duration(10) * time.Millisecond //心跳发送时间间隔
+
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -84,11 +86,10 @@ type Raft struct {
 	log         []LogEntry //日志条目；每个条目包含命令和从领导者收到条目的任期，索引从1开始
 
 	//非持久化的变量
-	curLeader      int       //当前的Leader，可用于重定向client，初始化为-1
-	lastUpdateTime time.Time //最后一次收到Leader的消息的时间戳，初始化为time.Unix(0, 0)
-	state          RaftState //表示当前节点状态
-	commitIndex    int       //已知的已提交的最高日志条目的索引（初始化为 0，单调递增）
-	lastApplied    int       //应用于状态机的最高日志条目的索引（初始化为 0，单调递增）
+	lastTimeHeard time.Time //最后一次收到Leader的消息的时间戳，初始化为time.Unix(0, 0)
+	state         RaftState //表示当前节点状态
+	commitIndex   int       //已知的已提交的最高日志条目的索引（初始化为 0，单调递增）
+	lastApplied   int       //应用于状态机的最高日志条目的索引（初始化为 0，单调递增）
 
 	//非持久化的Leader使用的变量
 	nextIndex  []int //对于每个服务器，要发送到该服务器的下一条日志条目的索引（初始化为领导者的上一条日志索引 + 1）
@@ -102,8 +103,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// TODO (2A) Your code here .
+	rf.mu.Lock()
 	term = rf.currentTerm
 	isleader = (rf.state == LEADER)
+	rf.mu.Unlock()
 	return term, isleader
 }
 
@@ -180,26 +183,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	// TODO (2A, 2B) Your code here .
 
-	if args.Term < rf.currentTerm {
-		// 候选者的任期小于当前服务器的任期，拒绝请求
-		reply.VoteGranted = false
-	} else if rf.currentTerm == args.Term {
-		// 候选者的任期等于当前服务器的任期
-		// 可能的情况：1) 同一任期的候选人互相拉票,而显然他们不会互相投票，因此返回False
-		//             2) ...?
-		if rf.votedFor != args.CandidateId {
-			reply.VoteGranted = false
-		} else {
-			reply.VoteGranted = true
-		}
-	} else {
-		//投票之前需要更新当前任期,因为是第一次更新，所以当前raft节点必然还没有投过票，因此直接投票
+	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && rf.votedFor != -1 && rf.votedFor != args.CandidateId) {
+		// 候选者的任期小于当前服务器的任期或者当前任期已经投过票了，因此不会再去投票了
+		reply.Term, reply.VoteGranted = rf.currentTerm, false
+		return
+	}
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateId
-		reply.VoteGranted = true
-		Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, args.CandidateId, args.Term)
+		rf.state = FOLLOWER
+		rf.lastTimeHeard = time.Now() //更新接收的时间，免得自己阻止投票
 	}
-	reply.Term = rf.currentTerm
+	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, args.CandidateId, args.Term)
+	reply.Term, reply.VoteGranted = rf.currentTerm, true
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -257,10 +253,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	// 收到有效的Leader的更新，此时需要更新Leader与最后一次收到Leader的时间信息
-	rf.curLeader = args.LeaderId
+	rf.currentTerm = args.Term
 	rf.state = FOLLOWER
-	rf.lastUpdateTime = time.Now()
-	rf.votedFor = -1
+	rf.lastTimeHeard = time.Now()
 	//条件2,3,4,5先略
 }
 
@@ -310,81 +305,93 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// 向Follower发送心跳
+// 心跳计时器
 func (rf *Raft) heartbeats() {
-	for !rf.killed() && rf.state == LEADER {
+	for !rf.killed() {
+		rf.mu.Lock()
+		if rf.state != LEADER{
+			rf.mu.Unlock()
+			return
+		}
 		for peer := range rf.peers {
 			if peer == rf.me {
 				continue
 			}
-			args := AppendEntriesArgs{Term: rf.currentTerm, LeaderId: rf.me}
-			reply := AppendEntriesReply{}
-			rf.sendAppendEntries(peer, &args, &reply)
+			go func(peer int, term int) {
+				args := AppendEntriesArgs{Term: term, LeaderId: rf.me}
+				reply := AppendEntriesReply{}
+				rf.sendAppendEntries(peer, &args, &reply)
+			}(peer, rf.currentTerm)
 		}
-		time.Sleep(time.Duration(10) * time.Millisecond)
+		//每周期执行一次心跳
+		rf.mu.Unlock()
+		time.Sleep(HEARTBEATETIME)
 	}
 }
 
-func (rf *Raft) ticker() {
+// 选举计时器
+func (rf *Raft) electionTicker() {
 	// 如果raft节点还在运行
 
 	for !rf.killed() {
+
+		// TODO (2A) Your code here
+		// Check if a leader election should be started.
+		rf.mu.Lock()
+		if rf.state == CANDIDATE {
+			//上一次竞选失败，重新竞选
+			Debug(dVote, "S%d lose last elect due to eletionTimeout,so S%d restart Elect", rf.me, rf.me)
+			rf.startElect()
+		} else if rf.state == FOLLOWER && time.Since(rf.lastTimeHeard) > 3*HEARTBEATETIME {
+			//已经3分钟没有听到810975是什么了，开始选举
+			Debug(dVote, "S%d lose connect from Leader,so S%d start Elect", rf.me, rf.me)
+			rf.startElect()
+		}
+		rf.mu.Unlock()
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-
-		// TODO (2A) Your code here
-		// Check if a leader election should be started.
-		if rf.state == CANDIDATE || (rf.state == FOLLOWER && rf.isLossConn()) {
-			Debug(dInfo, "S%d start Elect", rf.me)
-			// raft节点当前无法与leader相连,则进行一次选举
-			if rf.startElect() {
-				//如果成功当选Leader，通知所有peer
-				Debug(dInfo, "S%d win Elect", rf.me)
-				go rf.heartbeats()
-			}
-		}
 	}
 }
 
-func (rf *Raft) isLossConn() bool {
-	// TODO A 检查与Leader的连接是否正常
-	// 如果30ms没有接收到Leader发送过来的请求，就返回False
-	return time.Since(rf.lastUpdateTime) > time.Duration(30)*time.Millisecond
-}
-
-// raft节点无法连接Leader，因此它要进行选举
-func (rf *Raft) startElect() bool {
-	// TODO A 进行选举
-	rf.currentTerm++
+func (rf *Raft) startElect() {
 	rf.state = CANDIDATE
+	rf.currentTerm++ //任期自增
 	rf.votedFor = rf.me
-	voteCnt := 1
+	voteCnt := 1 //自己投自己一票
 	for peer := range rf.peers {
-		if peer == rf.me {
-			continue
+		if peer != rf.me {
+			go func(peer int, term int) {
+				//向其他人拉票
+				args := &RequestVoteArgs{Term: term, CandidateId: rf.me}
+				reply := &RequestVoteReply{}
+				ok := rf.sendRequestVote(peer, args, reply)
+				for !ok {
+					ok = rf.sendRequestVote(peer, args, reply)
+				}
+				if ok {
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if reply.VoteGranted && reply.Term == rf.currentTerm {
+						//如果收到票了，并且票是当前任期的
+						voteCnt++
+						if voteCnt > len(rf.peers)/2 && rf.state == CANDIDATE {
+							//成功当选
+							Debug(dVote, "S%d win elect with T%d", rf.me, rf.currentTerm)
+							rf.state = LEADER
+							go rf.heartbeats()
+						}
+					} else if reply.Term > rf.currentTerm {
+						//当前的任期不是最新的
+						Debug(dVote, "S%d finds a raft peer S%d with term %v,so convert to follower", rf.me, peer, reply.Term)
+						rf.currentTerm = reply.Term
+						rf.state = FOLLOWER
+						rf.votedFor = -1
+					}
+				}
+			}(peer, rf.currentTerm)
 		}
-		args := RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me}
-		reply := RequestVoteReply{}
-		ok := rf.sendRequestVote(peer, &args, &reply)
-		if ok {
-			if reply.Term > rf.currentTerm {
-				//如果发现了新的任期
-				rf.curLeader = reply.Term
-				rf.state = FOLLOWER
-				return false
-			} else if reply.VoteGranted {
-				Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
-				voteCnt++
-			}
-		}
-	}
-	if voteCnt > len(rf.peers)/2 {
-		rf.state = LEADER
-		return true
-	} else {
-		return false
 	}
 }
 
@@ -399,20 +406,18 @@ func (rf *Raft) startElect() bool {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-
+	rf := &Raft{
+		peers:     peers,
+		persister: persister,
+		me:        me,
+	}
 	// TODO (2A, 2B, 2C) Your initialization code here .
 	// 初始化持久化的变量
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 1)
 	// 初始化非持久化变量
-
-	rf.curLeader = -1
-	rf.lastUpdateTime = time.Unix(0, 0)
+	rf.lastTimeHeard = time.Unix(0, 0)
 	rf.state = FOLLOWER
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -420,7 +425,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.electionTicker()
 	Debug(dInfo, "S%d raft peer create", rf.me)
 	return rf
 }
