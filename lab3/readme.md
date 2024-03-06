@@ -194,13 +194,31 @@ func (rf *Raft) startElect() {
 相比前面的实现，此实现的优点在于。
 1. 异步拉票，判断voteCnt的方法在每次收到票的时候进行
 2. 容易实现锁，而且每一个锁锁住的资源符合锁建议，即锁住的资源不会占用很长的时间，都是CPU密集型的任务
+#### 实验结果
+```bashh
+go test -run 3A
+Test (3A): initial election ...
+  ... Passed --   3.0  3  574  146148    0
+Test (3A): election after network failure ...
+  ... Passed --   4.5  3 1075  227143    0
+Test (3A): multiple elections ...
+  ... Passed --   5.5  7 4449  924553    0
+PASS
+ok      6.5840/raft     13.094s
 
+#  数据格式注：
+#				   时间 raft对等体  RPC请求数 RPC消息总字节数 raft提交的log数量
+#  ... Passed --   5.5  7           4449      924553          0
+```
 
 ### Part B log
+实现 leader 和 follower 代码以追加新的日志条目，以通过` go test -run 3B `测试。
+
 ### Part C persistence
 ### Part D log compaction
 
 ## 实验分析
 
 
-## 实验结果
+
+

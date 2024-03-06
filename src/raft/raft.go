@@ -43,7 +43,7 @@ const HEARTBEATETIME = time.Duration(10) * time.Millisecond //心跳发送时间
 type ApplyMsg struct {
 	CommandValid bool        //如果命令已经被提交了，返回True
 	Command      interface{} //要执行的命令
-	CommandIndex int
+	CommandIndex int         //下标
 
 	// For 2D:
 	SnapshotValid bool
@@ -86,28 +86,29 @@ type Raft struct {
 	log         []LogEntry //日志条目；每个条目包含命令和从领导者收到条目的任期，索引从1开始
 
 	//非持久化的变量
-	lastTimeHeard time.Time //最后一次收到Leader的消息的时间戳，初始化为time.Unix(0, 0)
-	state         RaftState //表示当前节点状态
-	commitIndex   int       //已知的已提交的最高日志条目的索引（初始化为 0，单调递增）
-	lastApplied   int       //应用于状态机的最高日志条目的索引（初始化为 0，单调递增）
-
+	lastTimeHeard time.Time     //最后一次收到Leader的消息的时间戳，初始化为time.Unix(0, 0)
+	state         RaftState     //表示当前节点状态
+	commitIndex   int           //已知的已提交的最高日志条目的索引（初始化为 0，单调递增）
+	lastApplied   int           //应用于状态机的最高日志条目的索引（初始化为 0，单调递增）
+	applyCh       chan ApplyMsg //当日志条目提交时，向管道写入ApplyMsg
 	//非持久化的Leader使用的变量
-	nextIndex  []int //对于每个服务器，要发送到该服务器的下一条日志条目的索引（初始化为领导者的上一条日志索引 + 1）
-	matchIndex []int //已知在服务器上复制的最高日志条目的索引（初始化为 0，单调递增）
+	nextIndex  []int //对于每个服务器，要发送到该服务器的下一条日志条目的索引（初始化为领导者的最后一条日志索引 + 1）
+	matchIndex []int //在每个服务器上已知已经复制的最高日志条目的索引（初始化为 0，单调递增）
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
+// 这个函数里面已经使用了mu锁了，不要重复加锁
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int
-	var isleader bool
+	var isLeader bool
 	// TODO (2A) Your code here .
 	rf.mu.Lock()
 	term = rf.currentTerm
-	isleader = (rf.state == LEADER)
+	isLeader = (rf.state == LEADER)
 	rf.mu.Unlock()
-	return term, isleader
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -188,14 +189,24 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
+	// 获取当前raft节点的log的日志最后一条的任期与下标
+	lastLogTerm := rf.log[len(rf.log)-1].Term //日志记录的最后一条记录的任期
+	lastLogIndex := len(rf.log) - 1           //日志记录的最后一条记录的下标
+	if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
+		// 候选者的日志条目的任期没有当前条目的任期大，因此拒绝
+		// 候选者的日志条目的任期与当前一致，但是长度没有当前的长，因此拒绝
+		reply.Term, reply.VoteGranted = rf.currentTerm, false
+		return
+	}
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateId
-		rf.state = FOLLOWER
 		rf.lastTimeHeard = time.Now() //更新接收的时间，免得自己阻止投票
 	}
-	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, args.CandidateId, args.Term)
+	rf.state = FOLLOWER
+	rf.lastTimeHeard = time.Now() //更新接收的时间，免得自己阻止投票
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
+	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, args.CandidateId, args.Term)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -248,15 +259,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// TODO A,B
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// 条件1 $5.1
 	if args.Term < rf.currentTerm {
-		reply.Success = false
+		reply.Term,reply.Success = rf.currentTerm,false
 		return
 	}
+	// 条件2 Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+	// 如果下标不在当前rf.log范围中，那说明当前log不包含，可以直接返回
+	// 如果下标在当前rf.log范围中，检查对应下标的log条目任期是否符合Leader的任期
+	if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Term,reply.Success = rf.currentTerm,false
+		return
+	}
+	// 条件5  If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	// if args.LeaderCommit > rf.commitIndex {
+	// 	// rf.commitIndex = min(args.LeaderCommit,)
+	// }
+
 	// 收到有效的Leader的更新，此时需要更新Leader与最后一次收到Leader的时间信息
 	rf.currentTerm = args.Term
 	rf.state = FOLLOWER
 	rf.lastTimeHeard = time.Now()
-	//条件2,3,4,5先略
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -282,7 +305,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// TODO (2B) Your code here .
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.currentTerm
+	isLeader = (rf.state == LEADER)
+	if isLeader {
+		// 启动日志复制协程进行复制
+		go rf.broadcastLog(&LogEntry{Term: term, Command: command})
+	}
 	return index, term, isLeader
 }
 
@@ -309,16 +339,22 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) heartbeats() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		if rf.state != LEADER{
+		if rf.state != LEADER {
+			//已经不再是Leader了，不用执行心跳了，记得把锁释放
 			rf.mu.Unlock()
 			return
 		}
+
+		leaderCommit := rf.commitIndex
 		for peer := range rf.peers {
 			if peer == rf.me {
 				continue
 			}
+			prevLogIndex := rf.nextIndex[peer] - 1
+			prevLogTerm := rf.log[prevLogIndex].Term
 			go func(peer int, term int) {
-				args := AppendEntriesArgs{Term: term, LeaderId: rf.me}
+				// 心跳的话，应该不发送任何Entries条目？
+				args := AppendEntriesArgs{Term: term, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm, Entries: nil, LeaderCommit: leaderCommit}
 				reply := AppendEntriesReply{}
 				rf.sendAppendEntries(peer, &args, &reply)
 			}(peer, rf.currentTerm)
@@ -360,11 +396,14 @@ func (rf *Raft) startElect() {
 	rf.currentTerm++ //任期自增
 	rf.votedFor = rf.me
 	voteCnt := 1 //自己投自己一票
+	// 使用golang的闭包，所以不用go func的时候不用传输参数
+	lastLogTerm := rf.log[len(rf.log)-1].Term //日志记录的最后一条记录的任期
+	lastLogIndex := len(rf.log) - 1           //日志记录的最后一条记录的下标
 	for peer := range rf.peers {
 		if peer != rf.me {
 			go func(peer int, term int) {
 				//向其他人拉票
-				args := &RequestVoteArgs{Term: term, CandidateId: rf.me}
+				args := &RequestVoteArgs{Term: term, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
 				reply := &RequestVoteReply{}
 				ok := rf.sendRequestVote(peer, args, reply)
 				for !ok {
@@ -380,6 +419,11 @@ func (rf *Raft) startElect() {
 							//成功当选
 							Debug(dVote, "S%d win elect with T%d", rf.me, rf.currentTerm)
 							rf.state = LEADER
+							rf.matchIndex = make([]int, len(rf.peers))
+							rf.nextIndex = make([]int, len(rf.peers))
+							for i := range rf.nextIndex {
+								rf.nextIndex[i] = len(rf.log)
+							}
 							go rf.heartbeats()
 						}
 					} else if reply.Term > rf.currentTerm {
@@ -393,6 +437,10 @@ func (rf *Raft) startElect() {
 			}(peer, rf.currentTerm)
 		}
 	}
+}
+
+func (rf *Raft) broadcastLog(logentry *LogEntry) {
+
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -410,12 +458,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		peers:     peers,
 		persister: persister,
 		me:        me,
+		applyCh:   applyCh,
 	}
 	// TODO (2A, 2B, 2C) Your initialization code here .
 	// 初始化持久化的变量
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 1)
+	rf.log[0] = LogEntry{0, nil}
 	// 初始化非持久化变量
 	rf.lastTimeHeard = time.Unix(0, 0)
 	rf.state = FOLLOWER
