@@ -29,7 +29,7 @@ import (
 	"6.5840/labrpc"
 )
 
-const HEARTBEATETIME = time.Duration(10) * time.Millisecond //心跳发送时间间隔
+const HEARTBEATETIME = time.Duration(50) * time.Millisecond //心跳发送时间间隔
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -191,24 +191,29 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
+	if args.Term > rf.currentTerm {
+		// 当有一个更大的任期到来时，应当立刻转变当前的任期
+		rf.state = FOLLOWER
+		rf.currentTerm, rf.votedFor = args.Term, -1
+	}
 	// 获取当前raft节点的log的日志最后一条的任期与下标
-	lastLogTerm := rf.log[len(rf.log)-1].Term //日志记录的最后一条记录的任期
-	lastLogIndex := len(rf.log) - 1           //日志记录的最后一条记录的下标
-	if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
+	if !rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex) {
 		// 候选者的日志条目的任期没有当前条目的任期大，因此拒绝
 		// 候选者的日志条目的任期与当前一致，但是长度没有当前的长，因此拒绝
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = args.CandidateId
-		rf.lastTimeHeard = time.Now() //更新接收的时间，免得自己阻止投票
-	}
-	rf.state = FOLLOWER
-	rf.lastTimeHeard = time.Now() //更新接收的时间，免得自己阻止投票
+	rf.votedFor = args.CandidateId
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
+	rf.lastTimeHeard = time.Now() //更新接收的时间，免得自己阻止投票
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, args.CandidateId, args.Term)
+}
+
+// 检查请求的日志是否比当前的新,如果是最新的，返回true，否则返回false
+func (rf *Raft) isLogUpToDate(lastLogTerm, lastLogIndex int) bool {
+	curLastLogIndex := len(rf.log) - 1          //日志记录的最后一条记录的下标
+	curLastLogTerm := rf.log[curLastLogIndex].Term //日志记录的最后一条记录的任期
+	return curLastLogTerm < lastLogTerm || (lastLogTerm == curLastLogTerm && curLastLogIndex <= lastLogIndex)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -277,6 +282,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.lastTimeHeard = time.Now()
 		return
 	}
+	matchIndex := args.PrevLogIndex
 	// 条件3与条件4
 	// 非心跳请求,更新日志条目
 	if len(args.Entries) != 0 {
@@ -293,17 +299,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.log = append(rf.log, logEntry)
 			}
 		}
+		matchIndex = len(rf.log) - 1
 	}
 	// 条件5  If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	// 我在条件五更新时，将日志提交，但此时有一个前提必须满足。也就是所有要应用的日志条目必须与Leader相同。
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = minInt(args.LeaderCommit, len(rf.log)-1)
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		cnt := 0
+		for i := rf.lastApplied + 1; i <= rf.commitIndex && i <= matchIndex; i++ {
 			rf.applyCh <- ApplyMsg{CommandValid: true,
 				Command:      rf.log[i].Command,
 				CommandIndex: i}
-				Debug(dFollower,"S%d apply Command %v at LogIndex %d",rf.me,rf.log[i].Command,i)
+			Debug(dFollower, "S%d apply {Command:%v,Term:%d} at LogIndex %d", rf.me, rf.log[i].Command, rf.log[i].Term, i)
+			cnt++
 		}
-		rf.lastApplied = rf.commitIndex
+		rf.lastApplied = rf.lastApplied + cnt
 	}
 	// 收到有效的Leader的更新，此时需要更新Leader与最后一次收到Leader的时间信息
 	rf.currentTerm = args.Term
@@ -357,6 +367,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// TODO Your code here, if desired.
+
 }
 
 func (rf *Raft) killed() bool {
@@ -381,11 +392,22 @@ func (rf *Raft) heartbeats() {
 			}
 			prevLogIndex := rf.nextIndex[peer] - 1
 			prevLogTerm := rf.log[prevLogIndex].Term
-			go func(peer int, term int) {
-				// 心跳的话，应该不发送任何Entries条目？
-				args := AppendEntriesArgs{Term: term, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm, Entries: nil, LeaderCommit: leaderCommit}
+			go func(peer int, currentTerm int) {
+				// 心跳的话，发送的Entries条目为空
+				args := AppendEntriesArgs{Term: currentTerm, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm, Entries: nil, LeaderCommit: leaderCommit}
 				reply := AppendEntriesReply{}
-				rf.sendAppendEntries(peer, &args, &reply)
+				// Debug(dLeader,"S%d appendEntry to S%d with prevLogIndex %d",rf.me,peer,prevLogIndex)
+				ok := rf.sendAppendEntries(peer, &args, &reply)
+				if ok {
+					if reply.Term > currentTerm {
+						return
+					}
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if !reply.Success {
+						rf.nextIndex[peer] = maxInt(prevLogIndex, rf.matchIndex[peer]+1)
+					}
+				}
 			}(peer, rf.currentTerm)
 		}
 		//每周期执行一次心跳
@@ -399,7 +421,6 @@ func (rf *Raft) electionTicker() {
 	// 如果raft节点还在运行
 
 	for !rf.killed() {
-
 		// TODO (2A) Your code here
 		// Check if a leader election should be started.
 		rf.mu.Lock()
@@ -472,6 +493,7 @@ func (rf *Raft) startElect() {
 func (rf *Raft) broadcastLog(logEntry LogEntry) int {
 	// 2B 传播日志添加的消息
 	rf.log = append(rf.log, logEntry) //将日志条目添加到日志中
+	log := rf.log                     //复制一份当前的日志
 	currentTerm := rf.currentTerm     //当前任期
 	receiveCnt := 1                   //有多少个raft对等节点收到了新增的日志,初始化为1
 	lastLogIndex := len(rf.log) - 1   //当前日志记录的最后一条记录的下标
@@ -482,13 +504,15 @@ func (rf *Raft) broadcastLog(logEntry LogEntry) int {
 			// 只要Peer将当前的日志条目logEntry
 			prevLogIndex := rf.nextIndex[peer] - 1 //当前raft对等体中已经存在的下标，这个的值理应永远小于lastLogIndex
 			prevLogTerm := rf.log[prevLogIndex].Term
+			commitIndex := rf.commitIndex
 			go func(peer int) {
+
 				args := AppendEntriesArgs{Term: currentTerm, //发送时的任期
 					LeaderId:     rf.me, //当前rf的标识符
 					PrevLogIndex: prevLogIndex,
 					PrevLogTerm:  prevLogTerm,
-					Entries:      rf.log[prevLogIndex+1 : lastLogIndex+1], //将从prevLogIndex+1到当前最新的日志条目都发送给Follower
-					LeaderCommit: rf.commitIndex}                          //当前rf的提交下标
+					Entries:      log[prevLogIndex+1 : lastLogIndex+1], //将从prevLogIndex+1到当前最新的日志条目都发送给Follower
+					LeaderCommit: commitIndex}                          //当前rf的提交下标
 				reply := AppendEntriesReply{}
 				ok := false
 				for !ok {
@@ -507,10 +531,10 @@ func (rf *Raft) broadcastLog(logEntry LogEntry) int {
 						}
 						// lastLogIndex以及之前的日志都已经被Follower接收了
 						if reply.Success {
-							if rf.matchIndex[peer] < lastLogIndex {
+							if rf.matchIndex[peer] <= lastLogIndex {
 								rf.matchIndex[peer] = lastLogIndex
 							}
-							if rf.nextIndex[peer] < lastLogIndex {
+							if rf.nextIndex[peer] <= lastLogIndex {
 								rf.nextIndex[peer] = lastLogIndex + 1
 							}
 							receiveCnt++
@@ -518,23 +542,29 @@ func (rf *Raft) broadcastLog(logEntry LogEntry) int {
 							if receiveCnt > len(rf.peers)/2 && !successFlag {
 								//在Leader节点上运行提交条目
 								rf.commitIndex = maxInt(rf.commitIndex, lastLogIndex)
+								commitIndex = rf.commitIndex
+								cnt := 0
 								for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 									rf.applyCh <- ApplyMsg{CommandValid: true,
 										Command:      rf.log[i].Command,
 										CommandIndex: i}
-									Debug(dLeader,"S%d apply Command %v at LogIndex %d",rf.me,rf.log[i].Command,i)
+									Debug(dLeader, "S%d apply {Command:%v,Term:%d} at LogIndex %d", rf.me, rf.log[i].Command, rf.log[i].Term, i)
+									cnt++
 								}
-								rf.lastApplied = rf.commitIndex
+								rf.lastApplied = rf.lastApplied + cnt
 								successFlag = true //保证只会提交一次
 							}
 							rf.mu.Unlock()
 							return
 						} else {
 							//线性递减PrevLogIndex
+							rf.nextIndex[peer] = args.PrevLogIndex
 							args.PrevLogIndex = maxInt(args.PrevLogIndex-1, 0)
 							args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 							args.Entries = rf.log[args.PrevLogIndex+1 : lastLogIndex+1]
 							args.LeaderCommit = rf.commitIndex
+							Debug(dLeader, "S%d resend appendEntries to S%d with PrevLogIndex %d at Term %d", rf.me, peer, args.PrevLogIndex, currentTerm)
+							ok = false // 设为False 重新发送
 						}
 						rf.mu.Unlock()
 					}

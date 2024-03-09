@@ -354,7 +354,7 @@ func (rf *Raft) broadcastLog(logEntry LogEntry) int {
 `AppendEntries`按照论文图2的描述来实现
 
 #### 实验结果
-当前实验结果
+第一次实验结果错误，与修改方法
 ```bash
 $: go test -run 3B
 Test (3B): basic agreement ...
@@ -365,32 +365,70 @@ Test (3B): test progressive failure of followers ...
   ... Passed --   4.3  3  868  185841    3
 Test (3B): test failure of leaders ...
   ... Passed --   4.4  3 1385  293943    3
-Test (3B): agreement after follower reconnects ...
+Test (3B): agreement after follower reconnects ...  
+# 错误原因：因为我只在新增条目的时候更新nextIndex，超出了时间限制。
+# 于是我控制在发送心跳的时候同时更新nextIndex。
 --- FAIL: TestFailAgree3B (11.88s)
     config.go:601: one(106) failed to reach agreement
 Test (3B): no agreement if too many followers disconnect ...
   ... Passed --   7.2  5 1935  464797    2
 Test (3B): concurrent Start()s ...
   ... Passed --   0.6  3   95   25135    6
-Test (3B): rejoin of partitioned leader ...
+Test (3B): rejoin of partitioned leader ...  
+# 错误原因：我一开始的原因不知道为什么了，但是在我修复第一个错误后
+# 发现是因为我每次只要更新Follower的CommitIndex的时候，都会去apply条目。（而此时的条目是错误的）
+# 修改方法是新建一个变量matchIndex，保证如果没有entries条目到来，它就等于args.PrevLogIndex
+# 如果有entries条目到来，它在等于len(rf.log)-1
+# 这样做保证了，不会错误地apply
 --- FAIL: TestRejoin3B (12.49s)
     config.go:601: one(103) failed to reach agreement
 Test (3B): leader backs up quickly over incorrect follower logs ...
 --- FAIL: TestBackup3B (13.59s)
     config.go:601: one(1320326507008556142) failed to reach agreement
-Test (3B): RPC counts aren't too high ...
---- FAIL: TestCount3B (19.53s)
+Test (3B): RPC counts aren't too high ... 
+# 这里出错很可能是因为心跳间隔设置太小了，我一开始的心跳间隔设置在10ms，后来改成了50ms就通过了，不然我的心跳占用了太多RPC了
+--- FAIL: TestCount3B (19.53s) 
     test_test.go:658: term changed too often
 FAIL
 exit status 1
 FAIL    6.5840/raft     74.589s
 ```
-
+上述错误修改后，可以一次性通过测试。（暂时还未使用dTest.py进行循环测试）
+```bash
+$ go test -run 3B
+Test (3B): basic agreement ...
+  ... Passed --   0.2  3   20    4830    3
+Test (3B): RPC byte count ...
+  ... Passed --   0.7  3   54  113954   11
+Test (3B): test progressive failure of followers ...
+  ... Passed --   4.2  3  235   45504    3
+Test (3B): test failure of leaders ...
+  ... Passed --   4.5  3  363   74664    3
+Test (3B): agreement after follower reconnects ...
+  ... Passed --   5.0  3  229   56117    8
+Test (3B): no agreement if too many followers disconnect ...
+  ... Passed --   3.5  5  436   83545    4
+Test (3B): concurrent Start()s ...
+  ... Passed --   0.7  3   39   10298    6
+Test (3B): rejoin of partitioned leader ...
+  ... Passed --   3.7  3  260   57967    4
+Test (3B): leader backs up quickly over incorrect follower logs ...
+labgob warning: Decoding into a non-default variable/field Term may not work # 暂时不知道这个错误的原因
+  ... Passed --  26.6  5 7976 3026914  104
+Test (3B): RPC counts aren't too high ...
+  ... Passed --   2.3  3  106   28756   12
+PASS
+ok      6.5840/raft     51.371s
+```
 ### Part C persistence
 ### Part D log compaction
 
-## 实验分析
+## 测试文件分析
 
+```go 
 
+// 调用一次Start,要求调用后2秒内，期望的服务器数量都提交了日志，否则就会再调用一遍Start。
+cfg.one() 
+```
 
 

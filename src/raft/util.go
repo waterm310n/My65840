@@ -68,16 +68,22 @@ func Debug(topic logTopic, format string, a ...interface{}) {
 	}
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+func maxInt(a int, nums ...int) int {
+	maxNum := a
+	for _,num := range nums{
+		if num > maxNum {
+			maxNum = num
+		}
 	}
-	return b
+	return maxNum
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
+func minInt(a int, nums ...int) int {
+	minNum := a
+	for _,num := range nums{
+		if num < minNum {
+			minNum = num
+		}
 	}
-	return b
+	return minNum
 }
