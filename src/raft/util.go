@@ -2,34 +2,34 @@ package raft
 
 // reference https://blog.josejg.com/debugging-pretty/
 
-
 import (
+	"fmt"
+	"log"
 	"os"
 	"strconv"
-	"log"
 	"time"
-	"fmt"
 )
 
 type logTopic string
 
 const (
-	dClient  logTopic = "CLNT"
-	dCommit  logTopic = "CMIT"
-	dDrop    logTopic = "DROP"
-	dError   logTopic = "ERRO"
-	dInfo    logTopic = "INFO"
-	dLeader  logTopic = "LEAD"
-	dLog     logTopic = "LOG1"
-	dLog2    logTopic = "LOG2"
-	dPersist logTopic = "PERS"
-	dSnap    logTopic = "SNAP"
-	dTerm    logTopic = "TERM"
-	dTest    logTopic = "TEST"
-	dTimer   logTopic = "TIMR"
-	dTrace   logTopic = "TRCE"
-	dVote    logTopic = "VOTE"
-	dWarn    logTopic = "WARN"
+	dClient   logTopic = "CLNT"
+	dCommit   logTopic = "CMIT"
+	dDrop     logTopic = "DROP"
+	dError    logTopic = "ERRO"
+	dInfo     logTopic = "INFO"
+	dLeader   logTopic = "LEAD"
+	dLog      logTopic = "LOG1"
+	dLog2     logTopic = "LOG2"
+	dPersist  logTopic = "PERS"
+	dSnap     logTopic = "SNAP"
+	dTerm     logTopic = "TERM"
+	dTest     logTopic = "TEST"
+	dTimer    logTopic = "TIMR"
+	dTrace    logTopic = "TRCE"
+	dVote     logTopic = "VOTE"
+	dWarn     logTopic = "WARN"
+	dFollower logTopic = "FOLL"
 )
 
 // Retrieve the verbosity level from an environment variable
@@ -49,14 +49,12 @@ func getVerbosity() int {
 var debugStart time.Time
 var debugVerbosity int
 
-
 func init() {
 	debugVerbosity = getVerbosity()
 	debugStart = time.Now()
 
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 }
-
 
 // usage : Debug(topic, "S%d content", rf.me,...)
 // example : Debug(dTimer, "S%d Leader, checking heartbeats", rf.me)
@@ -68,4 +66,18 @@ func Debug(topic logTopic, format string, a ...interface{}) {
 		format = prefix + format
 		log.Printf(format, a...)
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -214,6 +214,178 @@ ok      6.5840/raft     13.094s
 ### Part B log
 实现 leader 和 follower 代码以追加新的日志条目，以通过` go test -run 3B `测试。
 
+两个关键方法`broadcastLog`与`AppendEntries`如下
+```go
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// TODO A,B
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// 条件1 $5.1
+	if args.Term < rf.currentTerm {
+		reply.Term, reply.Success = rf.currentTerm, false
+		return
+	}
+	// 条件2 Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+	// 如果下标不在当前rf.log范围中，那说明当前log不包含，可以直接返回
+	// 如果下标在当前rf.log范围中，对应下标的log条目任期不符合符合Leader的log对应任期，直接返回
+	if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		Debug(dFollower, "S%d can not match S%d's PrevLogIndex %d", rf.me, args.LeaderId, args.PrevLogIndex)
+		reply.Term, reply.Success = rf.currentTerm, false
+		rf.currentTerm = args.Term
+		rf.state = FOLLOWER
+		rf.lastTimeHeard = time.Now()
+		return
+	}
+	// 条件3与条件4
+	// 非心跳请求,更新日志条目
+	if len(args.Entries) != 0 {
+		nextIndex := args.PrevLogIndex + 1 //从与Leader有相同的日志部分开始的下一个下标
+		prevLogLength := len(rf.log)       //当前的日志长度
+		Debug(dFollower, "S%d receive S%d's log from %d to %d", rf.me, args.LeaderId, nextIndex, nextIndex+len(args.Entries)-1)
+		for _, logEntry := range args.Entries {
+			// 日志覆盖
+			if nextIndex < prevLogLength {
+				rf.log[nextIndex] = logEntry
+				nextIndex++
+			} else {
+				// 日志新增
+				rf.log = append(rf.log, logEntry)
+			}
+		}
+	}
+	// 条件5  If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = minInt(args.LeaderCommit, len(rf.log)-1)
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			rf.applyCh <- ApplyMsg{CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: i}
+				Debug(dFollower,"S%d apply Command %v at LogIndex %d",rf.me,rf.log[i].Command,i)
+		}
+		rf.lastApplied = rf.commitIndex
+	}
+	// 收到有效的Leader的更新，此时需要更新Leader与最后一次收到Leader的时间信息
+	rf.currentTerm = args.Term
+	rf.state = FOLLOWER
+	rf.lastTimeHeard = time.Now()
+	reply.Term, reply.Success = rf.currentTerm, true
+}
+
+
+// 将新的日志添加到log中，同时向Follower广播日志新增消息
+func (rf *Raft) broadcastLog(logEntry LogEntry) int {
+	// 2B 传播日志添加的消息
+	rf.log = append(rf.log, logEntry) //将日志条目添加到日志中
+	currentTerm := rf.currentTerm     //当前任期
+	receiveCnt := 1                   //有多少个raft对等节点收到了新增的日志,初始化为1
+	lastLogIndex := len(rf.log) - 1   //当前日志记录的最后一条记录的下标
+	successFlag := false
+	Debug(dLeader, "S%d start broadcast new logEntry {Command:%v,Term:%d} at LogIndex %d at Term %d", rf.me, logEntry.Command, logEntry.Term, lastLogIndex, currentTerm)
+	for peer := range rf.peers {
+		if peer != rf.me {
+			// 只要Peer将当前的日志条目logEntry
+			prevLogIndex := rf.nextIndex[peer] - 1 //当前raft对等体中已经存在的下标，这个的值理应永远小于lastLogIndex
+			prevLogTerm := rf.log[prevLogIndex].Term
+			go func(peer int) {
+				args := AppendEntriesArgs{Term: currentTerm, //发送时的任期
+					LeaderId:     rf.me, //当前rf的标识符
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
+					Entries:      rf.log[prevLogIndex+1 : lastLogIndex+1], //将从prevLogIndex+1到当前最新的日志条目都发送给Follower
+					LeaderCommit: rf.commitIndex}                          //当前rf的提交下标
+				reply := AppendEntriesReply{}
+				ok := false
+				for !ok {
+					ok = rf.sendAppendEntries(peer, &args, &reply)
+					// Follower接收者成功返回
+					if ok {
+						rf.mu.Lock()
+						// Follower的任期大于发送时的任期，
+						if reply.Term > currentTerm {
+							// Follower的任期大于发送方的任期，更新任期与状态
+							if reply.Term > rf.currentTerm {
+								rf.currentTerm, rf.state = reply.Term, FOLLOWER
+							}
+							rf.mu.Unlock()
+							return
+						}
+						// lastLogIndex以及之前的日志都已经被Follower接收了
+						if reply.Success {
+							if rf.matchIndex[peer] < lastLogIndex {
+								rf.matchIndex[peer] = lastLogIndex
+							}
+							if rf.nextIndex[peer] < lastLogIndex {
+								rf.nextIndex[peer] = lastLogIndex + 1
+							}
+							receiveCnt++
+							// 大部分raft节点都接收到了日志条目,提交命令
+							if receiveCnt > len(rf.peers)/2 && !successFlag {
+								//在Leader节点上运行提交条目
+								rf.commitIndex = maxInt(rf.commitIndex, lastLogIndex)
+								for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+									rf.applyCh <- ApplyMsg{CommandValid: true,
+										Command:      rf.log[i].Command,
+										CommandIndex: i}
+									Debug(dLeader,"S%d apply Command %v at LogIndex %d",rf.me,rf.log[i].Command,i)
+								}
+								rf.lastApplied = rf.commitIndex
+								successFlag = true //保证只会提交一次
+							}
+							rf.mu.Unlock()
+							return
+						} else {
+							//线性递减PrevLogIndex
+							args.PrevLogIndex = maxInt(args.PrevLogIndex-1, 0)
+							args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+							args.Entries = rf.log[args.PrevLogIndex+1 : lastLogIndex+1]
+							args.LeaderCommit = rf.commitIndex
+						}
+						rf.mu.Unlock()
+					}
+				}
+
+			}(peer)
+		}
+	}
+	return lastLogIndex
+}
+```
+`broadcastLog`方法的实现与`StartElect`方法原理一致。
+`AppendEntries`按照论文图2的描述来实现
+
+#### 实验结果
+当前实验结果
+```bash
+$: go test -run 3B
+Test (3B): basic agreement ...
+  ... Passed --   0.1  3   33    8410    3
+Test (3B): RPC byte count ...
+  ... Passed --   0.3  3   75  159694   11
+Test (3B): test progressive failure of followers ...
+  ... Passed --   4.3  3  868  185841    3
+Test (3B): test failure of leaders ...
+  ... Passed --   4.4  3 1385  293943    3
+Test (3B): agreement after follower reconnects ...
+--- FAIL: TestFailAgree3B (11.88s)
+    config.go:601: one(106) failed to reach agreement
+Test (3B): no agreement if too many followers disconnect ...
+  ... Passed --   7.2  5 1935  464797    2
+Test (3B): concurrent Start()s ...
+  ... Passed --   0.6  3   95   25135    6
+Test (3B): rejoin of partitioned leader ...
+--- FAIL: TestRejoin3B (12.49s)
+    config.go:601: one(103) failed to reach agreement
+Test (3B): leader backs up quickly over incorrect follower logs ...
+--- FAIL: TestBackup3B (13.59s)
+    config.go:601: one(1320326507008556142) failed to reach agreement
+Test (3B): RPC counts aren't too high ...
+--- FAIL: TestCount3B (19.53s)
+    test_test.go:658: term changed too often
+FAIL
+exit status 1
+FAIL    6.5840/raft     74.589s
+```
+
 ### Part C persistence
 ### Part D log compaction
 
