@@ -19,7 +19,7 @@ const (
 	dError    logTopic = "ERRO"
 	dInfo     logTopic = "INFO"
 	dLeader   logTopic = "LEAD"
-	dLog      logTopic = "LOG1"
+	dApply    logTopic = "APPL"
 	dLog2     logTopic = "LOG2"
 	dPersist  logTopic = "PERS"
 	dSnap     logTopic = "SNAP"
@@ -70,7 +70,7 @@ func Debug(topic logTopic, format string, a ...interface{}) {
 
 func maxInt(a int, nums ...int) int {
 	maxNum := a
-	for _,num := range nums{
+	for _, num := range nums {
 		if num > maxNum {
 			maxNum = num
 		}
@@ -80,7 +80,7 @@ func maxInt(a int, nums ...int) int {
 
 func minInt(a int, nums ...int) int {
 	minNum := a
-	for _,num := range nums{
+	for _, num := range nums {
 		if num < minNum {
 			minNum = num
 		}
