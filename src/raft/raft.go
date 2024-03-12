@@ -209,10 +209,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = FOLLOWER
 		rf.currentTerm, rf.votedFor = args.Term, -1
 	}
-	// 获取当前raft节点的log的日志最后一条的任期与下标
 	if !rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex) {
-		// 候选者的日志条目的任期没有当前条目的任期大，因此拒绝
-		// 候选者的日志条目的任期与当前一致，但是长度没有当前的长，因此拒绝
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
@@ -327,17 +324,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	matchIndex := args.PrevLogIndex //与当前Leader完全匹配的下标
 	if len(args.Entries) != 0 {
 		nextIndex := args.PrevLogIndex + 1 //从完全匹配的下一刻起更新日志
-		prevLogLength := len(rf.logs)      //当前的日志长度
-		Debug(dFollower, "S%d receive S%d's logs[%d:%d] ", rf.me, args.LeaderId, nextIndex, nextIndex+len(args.Entries))
-		for _, logEntry := range args.Entries {
-			if nextIndex < prevLogLength { // 日志覆盖
-				rf.logs[nextIndex] = logEntry
-				nextIndex++
-			} else { // 日志新增
-				rf.logs = append(rf.logs, logEntry)
+		i := 0
+		for ; i < len(args.Entries) && nextIndex < len(rf.logs); i, nextIndex = i+1, nextIndex+1 {
+			if rf.logs[nextIndex].Term == args.Entries[i].Term {
+				continue
+			} else {
+				rf.logs = rf.logs[:nextIndex]
+				break
 			}
 		}
-		matchIndex = len(rf.logs) - 1
+		for ;i < len(args.Entries);i++{
+			rf.logs = append(rf.logs, args.Entries[i])
+			nextIndex++
+		}
+		matchIndex = nextIndex - 1
 	}
 	rf.applyLogs(matchIndex, args.LeaderCommit)
 	reply.Term, reply.Success = rf.currentTerm, true
@@ -410,12 +410,11 @@ func (rf *Raft) broadcastHeartBeat() {
 		prevLogIndex := rf.nextIndex[peer] - 1
 		prevLogTerm := rf.logs[prevLogIndex].Term
 		go func(peer int, currentTerm int) {
-			// 心跳的话，发送的Entries条目为空
 			args := AppendEntriesArgs{Term: currentTerm,
 				LeaderId:     rf.me,
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
-				Entries:      nil,
+				Entries:      nil, // 心跳的话，发送的Entries条目为空
 				LeaderCommit: leaderCommit}
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(peer, &args, &reply)
@@ -433,17 +432,14 @@ func (rf *Raft) broadcastHeartBeat() {
 // 选举计时器
 func (rf *Raft) ticker() {
 	// 如果raft节点还在运行
-
 	for !rf.killed() {
 		// TODO (2A) Your code here
-		// Check if a leader election should be started.
 		select {
 		case <-rf.electionTimer.C: //选举超时
 			rf.mu.Lock()
 			if rf.state != LEADER {
 				rf.state = CANDIDATE
 				rf.currentTerm++ //任期自增
-				Debug(dVote, "S%d start Elect ", rf.me)
 				rf.startElect()
 			}
 			rf.electionTimer.Reset(randomizedElectionTimeout())
@@ -452,7 +448,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			if rf.state == LEADER {
 				rf.broadcastHeartBeat()
-				rf.heartbeatTimer.Reset(HEARTBEATETIME)
+				rf.heartbeatTimer.Reset(HEARTBEATETIME) //重置心跳
 			}
 			rf.mu.Unlock()
 		}
@@ -464,8 +460,9 @@ func (rf *Raft) startElect() {
 	rf.votedFor = rf.me
 	voteCnt := 1 //自己投自己一票
 	// 使用golang的闭包，所以不用go func的时候不用传输参数
-	lastLogTerm := rf.logs[len(rf.logs)-1].Term //日志记录的最后一条记录的任期
-	lastLogIndex := len(rf.logs) - 1            //日志记录的最后一条记录的下标
+	lastLogIndex := len(rf.logs) - 1          //日志记录的最后一条记录的下标
+	lastLogTerm := rf.logs[lastLogIndex].Term //日志记录的最后一条记录的任期
+	Debug(dVote, "S%d start Elect at T%d at state of {lastLogIndex:%d,lastLogTerm:%d}", rf.me, rf.currentTerm, lastLogIndex, lastLogTerm)
 	for peer := range rf.peers {
 		if peer != rf.me {
 			go func(peer int, term int) {
@@ -484,18 +481,17 @@ func (rf *Raft) startElect() {
 						voteCnt++
 						if voteCnt > len(rf.peers)/2 && rf.state == CANDIDATE {
 							//成功当选
-							Debug(dVote, "S%d win elect at T%d", rf.me, rf.currentTerm)
 							rf.state = LEADER
-							rf.matchIndex = make([]int, len(rf.peers))
-							rf.nextIndex = make([]int, len(rf.peers))
 							for i := range rf.nextIndex {
 								rf.nextIndex[i] = len(rf.logs)
+								rf.matchIndex[i] = 0
 							}
+							Debug(dVote, "S%d win elect at T%d", rf.me, rf.currentTerm)
 							rf.heartbeatTimer.Reset(0)
 						}
 					} else if reply.Term > rf.currentTerm {
 						//当前的任期不是最新的
-						Debug(dVote, "S%d finds a raft peer S%d with term %v,so convert to follower", rf.me, peer, reply.Term)
+						Debug(dVote, "S%d finds a raft peer S%d with T%d,so convert to follower", rf.me, peer, reply.Term)
 						rf.currentTerm, rf.state, rf.votedFor = reply.Term, FOLLOWER, -1
 					}
 				}
@@ -592,23 +588,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		peers:     peers,
 		persister: persister,
 		me:        me,
-		applyCh:   applyCh,
-	}
-	// TODO (2A, 2B, 2C) Your initialization code here .
-	// 初始化持久化的变量
-	rf.currentTerm = 0
-	rf.votedFor = -1
-	rf.logs = make([]LogEntry, 1)
-	rf.logs[0] = LogEntry{0, nil}
-	// 初始化非持久化变量
-	rf.state = FOLLOWER
-	rf.commitIndex = 0
-	rf.lastApplied = 0
-	rf.electionTimer = time.NewTimer(randomizedElectionTimeout())
-	rf.heartbeatTimer = time.NewTimer(HEARTBEATETIME)
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+		// 初始化持久化的变量
+		currentTerm: 0,
+		votedFor:    -1,
+		logs:        make([]LogEntry, 1),
+		// 初始化非持久化变量
+		state:       FOLLOWER,
+		commitIndex: 0,
+		lastApplied: 0,
+		applyCh:     applyCh,
 
+		nextIndex:      make([]int, len(peers)),
+		matchIndex:     make([]int, len(peers)),
+		electionTimer:  time.NewTimer(randomizedElectionTimeout()),
+		heartbeatTimer: time.NewTimer(HEARTBEATETIME),
+	}
+	rf.logs[0] = LogEntry{0, nil}
+	// TODO initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	Debug(dInfo, "S%d raft peer create", rf.me)
