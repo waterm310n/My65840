@@ -281,16 +281,20 @@ func (rf *Raft) isLogMatched(logTerm, logIndex int) bool {
 
 // 应用日志条目
 func (rf *Raft) applyLogs(matchIndex int, leaderCommit int) {
-	rf.commitIndex = minInt(leaderCommit, len(rf.logs)-1)
+	if leaderCommit > rf.commitIndex {
+		rf.commitIndex = minInt(leaderCommit, len(rf.logs)-1)
+	}
 	for i := rf.lastApplied + 1; i <= rf.commitIndex && i <= matchIndex; i++ {
 		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.logs[i].Command,
 			CommandIndex: i,
 		}
-		Debug(dApply, "S%d apply {Command:%v,Term:%d,CommandIndex:%d} at T%d", rf.me, rf.logs[i].Command, rf.logs[i].Term, i, rf.currentTerm)
+		Debug(dApply, "S%d apply {CommandIndex:%d,Term:%d,Command:%v,} at T%d",
+			rf.me, rf.logs[i].Command, rf.logs[i].Term, i, rf.currentTerm)
 		rf.lastApplied++
 	}
+	Debug(dFollower, "S%d's commitIndex is %d at T%d", rf.me, rf.commitIndex, rf.currentTerm)
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -333,7 +337,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
-		for ;i < len(args.Entries);i++{
+		for ; i < len(args.Entries); i++ {
 			rf.logs = append(rf.logs, args.Entries[i])
 			nextIndex++
 		}
@@ -462,7 +466,7 @@ func (rf *Raft) startElect() {
 	// 使用golang的闭包，所以不用go func的时候不用传输参数
 	lastLogIndex := len(rf.logs) - 1          //日志记录的最后一条记录的下标
 	lastLogTerm := rf.logs[lastLogIndex].Term //日志记录的最后一条记录的任期
-	Debug(dVote, "S%d start Elect at T%d at state of {lastLogIndex:%d,lastLogTerm:%d}", rf.me, rf.currentTerm, lastLogIndex, lastLogTerm)
+	Debug(dVote, "S%d start Elect at T%d with lastLogIndex:%d,lastLogTerm:%d", rf.me, rf.currentTerm, lastLogIndex, lastLogTerm)
 	for peer := range rf.peers {
 		if peer != rf.me {
 			go func(peer int, term int) {
@@ -486,7 +490,8 @@ func (rf *Raft) startElect() {
 								rf.nextIndex[i] = len(rf.logs)
 								rf.matchIndex[i] = 0
 							}
-							Debug(dVote, "S%d win elect at T%d", rf.me, rf.currentTerm)
+							Debug(dVote, "S%d win elect at T%d and commitIndex:%d,lastLogIndex:%d",
+								rf.me, rf.currentTerm, rf.commitIndex, len(rf.logs)-1)
 							rf.heartbeatTimer.Reset(0)
 						}
 					} else if reply.Term > rf.currentTerm {
