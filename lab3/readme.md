@@ -159,7 +159,7 @@ if len(args.Entries) != 0 {
 	matchIndex = len(rf.log) - 1
 }
 ```
-上面这部分代码没有严格遵守AppendEntries的第三个条件，因此他会存在部分概率无法通过`TestRejoin3B`，可以拿[失败用例分析](testRejoin3B.log)
+上面这部分代码没有严格遵守AppendEntries的第三个条件，因此他会存在部分概率无法通过`TestRejoin3B`
 
 最终实验结果
 ```bash
@@ -175,6 +175,21 @@ Failed test 3B - 20240312_183720/3B_199.log
 │ 3B   │      5 │   300 │ 65.90 ± 7.99 │
 └──────┴────────┴───────┴──────────────┘
 出错基本都出在TestFailNoAgree3B的第一次达成一致，需要在两秒内达成，然后偶尔会倒霉的超时。这里还有优化空间
+```
+
+
+#### replicator优化
+看了[@OneSizeFitsQuorum](https://github.com/OneSizeFitsQuorum)的[Lab文档](https://github.com/OneSizeFitsQuorum/MIT6.824-2021)的文档，使用replicator重构后的实验结果。当然500次不出错主要是我觉得主要是调整了选举时间，我将选举时间从原来的`150+[0-600]`调整为`300+[0-600]`。但是replicator显然相比之前的写法是更加优越的，因为在原来的实现中，每有一次日志新增在我的实现中就会多`n=len(peers)`个协程，每个协程各自发送RPC，这样就导致会发送大量的RPC，并且多个协程之间相互抢占CPU，导致资源浪费。使用Replicator模型的话，对于Leader来说，只会有n-1个协程负责发送数据，而且可以做到在一次RPC中发送多个Log。
+
+此外在原来的实现中，对于Leader，只会在收到Start的时候，并且新日志提交了，才会apply日志，这在实现持久化的时候很不方便。
+而在replicator模型中，会为每一个Server维护一个Applier协程，只要当前的`matchIndex[rf.me]`增长，就可以主动触发applier协程应用日志，这在未来实现持久化上会方便很多。
+```bash
+$ python3 dTest.py -p 2 -n 1000 3B
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃         Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━┩
+│ 3B   │      0 │   582 │ 56.96 ± 3.05 │
+└──────┴────────┴───────┴──────────────┘
 ```
 
 ### Part C persistence
