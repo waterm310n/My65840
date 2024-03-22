@@ -531,6 +531,9 @@ func (rf *Raft) ticker() {
 	for !rf.killed() {
 		select {
 		case <-rf.electionTimer.C: //选举超时
+			if rf.killed() {
+				return
+			}
 			rf.mu.Lock()
 			if rf.state != LEADER {
 				rf.changeState(CANDIDATE)
@@ -539,6 +542,9 @@ func (rf *Raft) ticker() {
 			rf.electionTimer.Reset(randomizedElectionTimeout())
 			rf.mu.Unlock()
 		case <-rf.heartbeatTimer.C: //心跳超时
+			if rf.killed() {
+				return
+			}
 			rf.mu.Lock()
 			if rf.state == LEADER {
 				rf.broadcast(HEARTBEAT)

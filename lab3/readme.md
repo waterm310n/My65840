@@ -313,30 +313,18 @@ T5,votedFor:S2,lastLog:{{5
 因此可知，想要优化raft还是需要更加仔细的思考才行。
 ### Part C persistence
 持久化，... 没做什么优化，基本就是currentTerm，votedFor，log有变化就更新。
+暂时WAL技术不太懂，如果用WAL技术的话，可优化的地方应该挺多的
 
 当前实验结果
 ```bash
-go test -run 3C
-Test (3C): basic persistence ...
-  ... Passed --  11.7  3  263   67808    8
-Test (3C): more persistence ...
-  ... Passed --  33.2  5 2176  456392   22
-Test (3C): partitioned leader and one follower crash, leader restarts ...
-  ... Passed --   2.7  3   53   12633    4
-Test (3C): Figure 8 ...
-  ... Passed --  34.8  5 1756  285550   33
-Test (3C): unreliable agreement ...
-  ... Passed --  10.8  5  599  178997  251
-Test (3C): Figure 8 (unreliable) ...
---- FAIL: TestFigure8Unreliable3C (104.48s)
-    config.go:601: one(8746) failed to reach agreement
-Test (3C): churn ...
-  ... Passed --  20.9  5  968  185417   62
-Test (3C): unreliable churn ...
-  ... Passed --  21.8  5  988  181948   44
-FAIL
-exit status 1
-FAIL    6.5840/raft     240.457s
+$ python3 dTest.py 3C
+Failed test 3C - 20240322_201004/3C_5.log
+Failed test 3C - 20240322_201004/3C_6.log
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃           Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ 3C   │      2 │    10 │ 203.84 ± 10.74 │
+└──────┴────────┴───────┴────────────────┘
 ```
 ### Part D log compaction
 
