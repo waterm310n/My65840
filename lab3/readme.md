@@ -191,8 +191,153 @@ $ python3 dTest.py -p 2 -n 1000 3B
 │ 3B   │      0 │   582 │ 56.96 ± 3.05 │
 └──────┴────────┴───────┴──────────────┘
 ```
+错例分析：
+在replicator中，对于Leader的commitIndex更新，我错误地使用了二分，想要快速优化，但是这是有问题的，因为根据raft论文给出的条件，commitIndex不满足二分所需的单调性。
+这个问题导致我的持久化卡了很久，可以仔细思考下面的实现。
+```go
+// 判断是否大多数节点收到了N
+func (rf *Raft) hasBeenAppendedMajority(N int) bool {
+	cnt := 0
+	for _, v := range rf.matchIndex {
+		if v >= N {
+			cnt++
+		}
+	}
+	//不满足二分的主要原因就在于rf.Log[N].Term == rf.CurrentTerm该等式。
+	return cnt > len(rf.peers)/2 && rf.Log[N].Term == rf.CurrentTerm 
+}
 
+//处理日志复制响应的函数
+func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// 前略
+	if reply.Success { //发出去的日志已经被接收了
+		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
+		rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+		left, right := rf.commitIndex+1, rf.getLastLog().Index
+		Debug(dLeader,"S%d know S%d receive %v l:%d,r:%d",rf.me,peer,args.Entries,left,right)
+		for left <= right {
+			mid := (left + right) / 2
+			Debug(dLeader,"S%d check mid:%d",rf.me,mid)
+			if rf.hasBeenAppendedMajority(mid) {
+				Debug(dLeader,"S%d check mid:%d success",rf.me,mid)
+				rf.commitIndex = maxInt(rf.commitIndex, mid)
+				rf.applyCond.Signal()
+				left++
+			} else {
+				Debug(dLeader,"S%d check mid:%d fail",rf.me,mid)
+				right--
+			}
+		}
+	} else { //更新nextIndex
+		//略
+	}
+}
+
+```
+下面给出输出日志，参考输出不难发现问题所在。由于添加的新日志在3，导致验证2失败，因为日志不在当前任期，无法提交。
+```bash
+S0 readPersist T1 S4 [{0                                                                                                               
+<nil> 0} {1 11 1}]                                                                                                                     
+S0 raft node created                                                                                                                   
+                            S1 readPersist T1 S4 [{0                                                                                   
+                            <nil> 0} {1 11 1}]                                                                                         
+                            S1 raft node created  
+													   S2 readPersist T2 S2 [{0                                                        
+                                                       <nil> 0} {1 11 1} {1 12                                                         
+                                                       2}]                                                                             
+                                                       S2 raft node created
+													   S2 win elect at T5 and                                                          
+                                                       commitIndex:0,lastLogInde…                                                      
+                                                       S2 broadcast HeartBeat at                                                       
+                                                       T5 with commitIndex 0                                                           
+                            S1 persist at                                                                                              
+                            T5,votedFor:S2,lastLog:{{1                                                                                 
+                            11 1}}                                                                                                     
+S0 persist at                                                                                                                          
+T5,votedFor:S2,lastLog:{{1                                                                                                             
+11 1}}                                                                                                                                 
+                                                       S2 append {5 13 3} at T5                                                        
+                                                       S2 persist at                                                                   
+                                                       T5,votedFor:S2,lastLog:{{5                                                      
+                                                       13 3}}                                                                          
+                                                       S2 broadcast Log at T5                                                          
+                                                       S2 send Log to S1                                                               
+                                                       prevLogIndex:2 at T5                                                            
+                            S1 persist at                                                                                              
+                            T5,votedFor:S2,lastLog:{{1                                                                                 
+                            11 1}}                                                                                                     
+                                                       S2 send Log to S4                                                               
+                                                       prevLogIndex:2 at T5                                                            
+                                                       S2 send Log to S3                                                               
+                                                       prevLogIndex:2 at T5                                                            
+                                                       S2 know Confilct with S1                                                        
+                                                       S2 send Log to S1                                                               
+                                                       prevLogIndex:1 at T5                                                            
+                            S1's lastLog {1 12 2} at                                                                                   
+                            T5                                                                                                         
+                                                       S2 send Log to S0                                                               
+                                                       prevLogIndex:2 at T5                                                            
+                            S1's lastLog {5 13 3} at                                                                                   
+                            T5                                                                                                         
+                            S1 persist at                                                                                              
+                            T5,votedFor:S2,lastLog:{{5                                                                                 
+                            13 3}}                                                                                                     
+                                                       S2 know S1 receive [{1 12                                                       
+                                                       2} {5 13 3}] l:1,r:3                                                            
+                                                       S2 check mid:2                                                                  
+                                                       S2 check mid:2 fail                                                             
+                                                       S2 check mid:1                                                                  
+                                                       S2 check mid:1 fail                                                             
+S0 persist at                                                                                                                          
+T5,votedFor:S2,lastLog:{{1                                                                                                             
+11 1}}                                                                                                                                 
+                                                       S2 check mid:1                                                                  
+                                                       S2 check mid:1 fail                                                             
+                                                       S2 know Confilct with S0                                                        
+                                                       S2 send Log to S0                                                               
+                                                       prevLogIndex:1 at T5                                                            
+S0's lastLog {1 12 2} at T5                                                                                                            
+S0's lastLog {5 13 3} at T5                                                                                                            
+S0 persist at                                                                                                                          
+T5,votedFor:S2,lastLog:{{5                                                                                                             
+13 3}}                                                                                                                                 
+                                                       S2 know S0 receive [{1 12                                                       
+                                                       2} {5 13 3}] l:1,r:3                                                            
+                                                       S2 check mid:2                                                                  
+                                                       S2 check mid:2 fail                                                             
+                                                       S2 check mid:1                                                                  
+                                                       S2 check mid:1 fail                                                             
+                                                       S2 check mid:1                                                                  
+                                                       S2 check mid:1 fail   
+```
+因此可知，想要优化raft还是需要更加仔细的思考才行。
 ### Part C persistence
+持久化，... 没做什么优化，基本就是currentTerm，votedFor，log有变化就更新。
+
+当前实验结果
+```bash
+go test -run 3C
+Test (3C): basic persistence ...
+  ... Passed --  11.7  3  263   67808    8
+Test (3C): more persistence ...
+  ... Passed --  33.2  5 2176  456392   22
+Test (3C): partitioned leader and one follower crash, leader restarts ...
+  ... Passed --   2.7  3   53   12633    4
+Test (3C): Figure 8 ...
+  ... Passed --  34.8  5 1756  285550   33
+Test (3C): unreliable agreement ...
+  ... Passed --  10.8  5  599  178997  251
+Test (3C): Figure 8 (unreliable) ...
+--- FAIL: TestFigure8Unreliable3C (104.48s)
+    config.go:601: one(8746) failed to reach agreement
+Test (3C): churn ...
+  ... Passed --  20.9  5  968  185417   62
+Test (3C): unreliable churn ...
+  ... Passed --  21.8  5  988  181948   44
+FAIL
+exit status 1
+FAIL    6.5840/raft     240.457s
+```
 ### Part D log compaction
 
 ## 参考实现

@@ -118,14 +118,14 @@ func (rf *Raft) getLastLog() LogEntry {
 func (rf *Raft) persist() {
 	// TODO (2C) Your code here .
 	// Example:
-	// defer Debug(dLog, "S%d persist at T%d,votedFor:S%d,lastLog:{%v}", rf.me, rf.CurrentTerm, rf.VotedFor, rf.Log[len(rf.Log)-1])
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.CurrentTerm)
-	// e.Encode(rf.VotedFor)
-	// e.Encode(rf.Log)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	defer Debug(dLog, "S%d persist at T%d,votedFor:S%d,lastLog:{%v}", rf.me, rf.CurrentTerm, rf.VotedFor, rf.getLastLog())
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // 取回持久化的raft数据
@@ -133,26 +133,15 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// TODO (2C) Your code here .
-	// Example:
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var CurrentTerm int
 	var VotedFor int
 	var Logs []LogEntry
-	if err := d.Decode(&CurrentTerm); err != nil {
-		Debug(dLog, "S%d cannot readPersist due to %v ", rf.me, err)
-		return
+	if d.Decode(&CurrentTerm) != nil || d.Decode(&VotedFor) != nil || d.Decode(&Logs) != nil {
+		Debug(dError, "S%d can not readPersist", rf.me)
 	}
-	if err := d.Decode(&VotedFor); err != nil {
-		Debug(dLog, "S%d cannot readPersist due to %v ", rf.me, err)
-		return
-	}
-	if err := d.Decode(&Logs); err != nil {
-		Debug(dLog, "S%d cannot readPersist due to %v ", rf.me, err)
-		return
-	}
-	Debug(dLog, "S%d readPersist %d %d %v", rf.me, CurrentTerm, VotedFor, Logs)
+	Debug(dLog, "S%d readPersist T%d S%d %v", rf.me, CurrentTerm, VotedFor, Logs)
 	rf.CurrentTerm, rf.VotedFor, rf.Log = CurrentTerm, VotedFor, Logs
 }
 
@@ -180,12 +169,12 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 	if args.Term < rf.CurrentTerm || (args.Term == rf.CurrentTerm && rf.VotedFor != -1 && rf.VotedFor != args.CandidateId) {
 		// 候选者的任期小于当前服务器的任期或者当前任期已经投过票了，因此不会再去投票了
 		reply.Term, reply.VoteGranted = rf.CurrentTerm, false
 		return
 	}
+	defer rf.persist()
 	if args.Term > rf.CurrentTerm {
 		// 当有一个更大的任期到来时，应当立刻转变当前的任期($5.1)
 		rf.state = FOLLOWER
@@ -203,7 +192,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 // 检查请求的日志是否比当前的新,如果是最新的，返回true，否则返回false
 func (rf *Raft) isLogUpToDate(lastLogTerm, lastLogIndex int) bool {
-	curLastLogIndex := len(rf.Log) - 1             //日志记录的最后一条记录的下标
+	curLastLogIndex := rf.getLastLog().Index       //日志记录的最后一条记录的下标
 	curLastLogTerm := rf.Log[curLastLogIndex].Term //日志记录的最后一条记录的任期
 	return curLastLogTerm < lastLogTerm || (lastLogTerm == curLastLogTerm && curLastLogIndex <= lastLogIndex)
 }
@@ -265,11 +254,11 @@ func (rf *Raft) advanceCommitIndexForFollower(currentTerm, leaderCommit int) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 	if args.Term < rf.CurrentTerm {
 		reply.Term, reply.Success = rf.CurrentTerm, false
 		return
 	}
+	defer rf.persist()
 	if args.Term > rf.CurrentTerm {
 		rf.CurrentTerm, rf.VotedFor = args.Term, -1
 	}
@@ -319,6 +308,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 // 向日志中添加新的条目
 func (rf *Raft) appendNewLogEntry(command interface{}) LogEntry {
+	defer rf.persist()
 	newLogEntry := LogEntry{Term: rf.CurrentTerm, Command: command, Index: rf.getLastLog().Index + 1}
 	rf.Log = append(rf.Log, newLogEntry)
 	rf.matchIndex[rf.me] = newLogEntry.Index
@@ -385,10 +375,11 @@ func (rf *Raft) changeState(state RaftState) {
 // 开始选举
 func (rf *Raft) startElect() {
 	rf.VotedFor = rf.me
-	voteCnt := 1 //自己投自己一票
-	rf.persist()
+	rf.CurrentTerm++                //任期自增
+	voteCnt := 1                    //自己投自己一票
 	lastLogEntry := rf.getLastLog() // 使用golang的闭包，所以不用go func的时候不用传输参数
-	defer Debug(dVote, "S%d start Elect at T%d,lastLog is %v", rf.me, rf.CurrentTerm, lastLogEntry)
+	Debug(dVote, "S%d start Elect at T%d,lastLog is %v", rf.me, rf.CurrentTerm, lastLogEntry)
+	rf.persist()
 	for peer := range rf.peers {
 		if peer == rf.me {
 			continue
@@ -501,23 +492,19 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 	if reply.Term > args.Term { // Follower的任期大于发送时的任期，直接结束
 		if reply.Term > rf.CurrentTerm { // Follower的任期大于发送方的任期，更新任期与状态
 			rf.CurrentTerm, rf.state, rf.VotedFor = reply.Term, FOLLOWER, -1
+			rf.persist()
 		}
-		rf.persist()
 		return
 	}
 	if reply.Success { //发出去的日志已经被接收了
 		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
 		rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
-		left, right := rf.commitIndex+1, rf.getLastLog().Index //使用二分进行查找
-		for left <= right {
-			mid := (left + right) / 2
-			if rf.hasBeenAppendedMajority(mid) {
-				//感觉这个单调性不是很明确，所以我摆烂了，直接在此处更新
-				rf.commitIndex = maxInt(rf.commitIndex, mid)
+		left, right := rf.commitIndex+1, rf.getLastLog().Index
+		for N := right; N >= left; N-- {
+			if rf.hasBeenAppendedMajority(N) {
+				rf.commitIndex = maxInt(rf.commitIndex, N)
 				rf.applyCond.Signal()
-				left++
-			} else {
-				right--
+				break //成功了就可以直接退出了
 			}
 		}
 	} else { //更新nextIndex
@@ -540,14 +527,13 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 
 // 计时器
 func (rf *Raft) ticker() {
-	// 如果raft节点还在运行
+	// 如果raft节点还在运行，当计时器触发的时候，rf可能已经死了
 	for !rf.killed() {
 		select {
 		case <-rf.electionTimer.C: //选举超时
 			rf.mu.Lock()
 			if rf.state != LEADER {
 				rf.changeState(CANDIDATE)
-				rf.CurrentTerm++ //任期自增
 				rf.startElect()
 			}
 			rf.electionTimer.Reset(randomizedElectionTimeout())
@@ -559,6 +545,7 @@ func (rf *Raft) ticker() {
 				rf.heartbeatTimer.Reset(HEARTBEATETIME) //重置心跳
 			}
 			rf.mu.Unlock()
+
 		}
 	}
 }
