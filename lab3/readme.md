@@ -315,15 +315,34 @@ T5,votedFor:S2,lastLog:{{5
 持久化，... 没做什么优化，基本就是currentTerm，votedFor，log有变化就更新。
 暂时WAL技术不太懂，如果用WAL技术的话，可优化的地方应该挺多的
 
-当前实验结果
+当前实验结果，单元测试基本上不会出错，但是直接整个测试就很耗时，很容易出错。
+我怀疑是整个测试流程中，资源消耗过大，可能有资源泄露的问题？但是尝试在Kill()函数中关闭，直接报空指针，所以这部分暂时还无法了解具体原因，未来有空的话在做修改。
 ```bash
-$ python3 dTest.py 3C
-Failed test 3C - 20240322_201004/3C_5.log
-Failed test 3C - 20240322_201004/3C_6.log
+# 纯粹的单元测试
+$ VERBOSE=1 python3 dTest.py -p 10 -n 100 TestPersist13C TestPersist23C TestPersist33C TestFigure83C TestUnreliableAgree3C TestFigure8Unreliable3C TestReliableChurn3C TestUnreliableChurn3C 
+# 10s超时后日志未达成一致，检查日志可以看出主要原因是发送的log请求间隔太长了，这个暂时没什么好解决的方法
+Failed test TestFigure8Unreliable3C - 20240326_200017/TestFigure8Unreliable3C_575.log
+┏━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Test                    ┃ Failed ┃ Total ┃         Time ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━┩
+│ TestPersist13C          │      0 │   100 │ 11.91 ± 3.08 │
+│ TestPersist23C          │      0 │   100 │ 34.59 ± 3.37 │
+│ TestPersist33C          │      0 │   100 │  5.82 ± 1.98 │
+│ TestFigure83C           │      0 │   100 │ 31.44 ± 2.62 │
+│ TestUnreliableAgree3C   │      0 │   100 │  1.92 ± 0.10 │
+│ TestFigure8Unreliable3C │      1 │   100 │ 38.06 ± 3.23 │
+│ TestReliableChurn3C     │      0 │   100 │ 18.08 ± 1.57 │
+│ TestUnreliableChurn3C   │      0 │   100 │ 17.87 ± 1.61 │
+└─────────────────────────┴────────┴───────┴──────────────┘
+
+# 整个3C的测试
+$ VERBOSE=1 python3 dTest.py -p 2 3C
+Failed test 3C - 20240326_202931/3C_1.log
+Failed test 3C - 20240326_202931/3C_2.log
 ┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━┓
 ┃ Test ┃ Failed ┃ Total ┃           Time ┃
 ┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━┩
-│ 3C   │      2 │    10 │ 203.84 ± 10.74 │
+│ 3C   │      2 │    10 │ 208.89 ± 13.19 │
 └──────┴────────┴───────┴────────────────┘
 ```
 ### Part D log compaction

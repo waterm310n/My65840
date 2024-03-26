@@ -236,6 +236,7 @@ type AppendEntriesReply struct {
 	Success bool //如果Follower包含匹配PrevLogIndex与PrevLogTerm值的条目，则为true
 	XTerm   int  //与PrevLogIndex如果存在冲突，返回冲突的任期
 	XIndex  int  //冲突所在的任期的第一个下标
+	// XLen    int  //如果存在冲突，返回Follower当前的日志长度
 }
 
 // 日志是否匹配
@@ -266,16 +267,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.electionTimer.Reset(randomizedElectionTimeout())
 	if !rf.isLogMatched(args.PrevLogTerm, args.PrevLogIndex) { //日志不匹配
 		reply.Term, reply.Success = rf.CurrentTerm, false
-		lastIndex := rf.getLastLog().Index
-		if args.PrevLogIndex > lastIndex {
+		firstIndex, lastIndex := rf.getFirstLog().Index, rf.getLastLog().Index
+		if args.PrevLogIndex > lastIndex { //当前的日志太短了
 			reply.XTerm, reply.XIndex = -1, lastIndex+1
 		} else {
-			reply.XTerm = rf.Log[args.PrevLogIndex].Term
+			reply.XTerm = rf.Log[args.PrevLogIndex-firstIndex].Term
 			index := args.PrevLogIndex - 1
-			for index >= 1 && rf.Log[index].Term == reply.XTerm {
+			for index >= firstIndex && rf.Log[index-firstIndex].Term == reply.XTerm {
 				index--
 			}
-			reply.XIndex = index + 1
+			reply.XIndex = index + 1 // 返回的XIndex是当前日志中第一个与Xterm匹配的下标
 		}
 		return
 	}
@@ -444,7 +445,10 @@ func (rf *Raft) heartBeat(peer int) {
 
 // 处理心跳
 func (rf *Raft) handleHearBeat(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.Term == rf.CurrentTerm && reply.Term > rf.CurrentTerm {
+	if args.Term != rf.CurrentTerm || rf.state != LEADER {
+		return
+	}
+	if reply.Term > rf.CurrentTerm {
 		rf.changeState(FOLLOWER)
 		rf.CurrentTerm, rf.VotedFor = reply.Term, -1
 		rf.persist()
@@ -465,7 +469,7 @@ func (rf *Raft) replicateOneRound(peer int) {
 		return
 	} else {
 		args := rf.createAppendEntriesArgs(prevLogIndex)
-		Debug(dLeader, "S%d send Log to S%d prevLogIndex:%d at T%d", rf.me, peer, prevLogIndex, rf.CurrentTerm)
+		Debug(dLeader, "S%d send Log to S%d {prevLogIndex:%d,prevLogTerm:%d} at T%d", rf.me, peer, prevLogIndex, args.PrevLogTerm, rf.CurrentTerm)
 		rf.mu.RUnlock()
 		reply := AppendEntriesReply{}
 		if rf.sendAppendEntries(peer, &args, &reply) {
@@ -489,11 +493,12 @@ func (rf *Raft) hasBeenAppendedMajority(N int) bool {
 
 // 处理复制日志响应
 func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if reply.Term > args.Term { // Follower的任期大于发送时的任期，直接结束
-		if reply.Term > rf.CurrentTerm { // Follower的任期大于发送方的任期，更新任期与状态
-			rf.CurrentTerm, rf.state, rf.VotedFor = reply.Term, FOLLOWER, -1
-			rf.persist()
-		}
+	if args.Term != rf.CurrentTerm || rf.state != LEADER { // 移除过时的响应
+		return
+	}
+	if reply.Term > rf.CurrentTerm { // Follower的任期大于发送时的任期，直接结束
+		rf.CurrentTerm, rf.state, rf.VotedFor = reply.Term, FOLLOWER, -1
+		rf.persist()
 		return
 	}
 	if reply.Success { //发出去的日志已经被接收了
@@ -509,6 +514,10 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 		}
 	} else { //更新nextIndex
 		Debug(dLeader, "S%d know Confilct with S%d", rf.me, peer)
+		if reply.XTerm == -1 { //Follower的日志太短了
+			rf.nextIndex[peer] = reply.XIndex
+			return
+		}
 		i := len(rf.Log) - 1
 		isXTermExist := false // 检查在日志中是否存在XTerm
 		for ; i >= 0; i-- {
@@ -520,7 +529,7 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 		if !isXTermExist { //如果日志中不存在XTerm
 			rf.nextIndex[peer] = reply.XIndex
 		} else { //如果当前日志存在XTerm
-			rf.nextIndex[peer] = i
+			rf.nextIndex[peer] = rf.Log[i].Index //设nextIndex为当前XTerm的最后一个日志
 		}
 	}
 }
