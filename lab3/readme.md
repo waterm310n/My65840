@@ -347,5 +347,38 @@ Failed test 3C - 20240326_202931/3C_2.log
 ```
 ### Part D log compaction
 
+遇到的第一个问题：push apply要求不能加锁，否则会死锁。
+原因：执行Snapshot的时候，需要用到锁，而在push apply的时候已经拥有锁了，于是造成了死锁，因此push apply没办法加锁。
+解决方法：将applier方法修改为不加锁的版本。
+```go
+// 异步应用日志条目协程
+func (rf *Raft) applier() {
+	for !rf.killed() {
+		rf.applyCond.L.Lock()
+		for !rf.needApplyingLog() {
+			rf.applyCond.Wait()
+		}
+		firstIndex, commitIndex, lastApplied := rf.getFirstLog().Index, rf.commitIndex, rf.lastApplied
+		toBeApplyLogEntries := rf.Log[lastApplied+1-firstIndex:commitIndex+1-firstIndex]
+		// txy的完全copy效率太低了，我觉得可以直接零拷贝，因为这部分是commit的了
+		// copy(toBeApplyLogEntries, rf.Log[lastApplied+1-firstIndex:commitIndex+1-firstIndex]) 
+		rf.applyCond.L.Unlock() //释放锁，因为Push ApplyCh的时候不能持有所
+		for _, entry := range toBeApplyLogEntries {
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}
+		}
+		rf.applyCond.L.Lock()
+		rf.lastApplied = maxInt(rf.lastApplied, commitIndex)
+		rf.applyCond.L.Unlock()
+	}
+}
+```
+
+不稳定通过TestSnapshotBasic3D
+
+
 ## 参考实现
 [@OneSizeFitsQuorum](https://github.com/OneSizeFitsQuorum)的[Lab文档](https://github.com/OneSizeFitsQuorum/MIT6.824-2021)

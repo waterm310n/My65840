@@ -38,3 +38,8 @@ type LogEntry struct {
 	Command interface{} //日志条目的命令
 	Index   int         // 日志条目所对应的下标，需要记录这个原因是3D应用快照的时候，log对应的下标不再是CommandIndex
 }
+
+// GC友好函数，感觉太耗时间了，不是很有意义？
+func shrinkEntriesArray(log []LogEntry) []LogEntry {
+	return append([]LogEntry{}, log...)
+}
