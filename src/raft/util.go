@@ -19,7 +19,7 @@ const (
 	dError   logTopic = "ERRO"
 	dInfo    logTopic = "INFO"
 	dLeader  logTopic = "LEAD"
-	dApply   logTopic = "APPL"
+	dLog     logTopic = "LOG1"
 	dLog2    logTopic = "LOG2"
 	dPersist logTopic = "PERS"
 	dSnap    logTopic = "SNAP"
@@ -29,7 +29,6 @@ const (
 	dTrace   logTopic = "TRCE"
 	dVote    logTopic = "VOTE"
 	dWarn    logTopic = "WARN"
-	dLog     logTopic = "LOG1"
 )
 
 // Retrieve the verbosity level from an environment variable
@@ -56,9 +55,9 @@ func init() {
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 }
 
-// usage : Debug(topic, "S%d content", rf.me,...)
-// example : Debug(dTimer, "S%d Leader, checking heartbeats", rf.me)
-func Debug(topic logTopic, format string, a ...interface{}) {
+// usage : DPrintf(topic, "S%d content", rf.me,...)
+// example : DPrintf(dTimer, "S%d Leader, checking heartbeats", rf.me)
+func DPrintf(topic logTopic, format string, a ...interface{}) {
 	if debugVerbosity >= 1 {
 		time := time.Since(debugStart).Microseconds()
 		time /= 100
@@ -68,22 +67,3 @@ func Debug(topic logTopic, format string, a ...interface{}) {
 	}
 }
 
-func maxInt(a int, nums ...int) int {
-	maxNum := a
-	for _, num := range nums {
-		if num > maxNum {
-			maxNum = num
-		}
-	}
-	return maxNum
-}
-
-func minInt(a int, nums ...int) int {
-	minNum := a
-	for _, num := range nums {
-		if num < minNum {
-			minNum = num
-		}
-	}
-	return minNum
-}

@@ -16,7 +16,7 @@ TOPICS = {
     "VOTE": "#67a0b2",
     "LEAD": "#d0b343",
     "TERM": "#70c43f",
-    "APPL": "#4878bc",
+    "LOG1": "#4878bc",
     "LOG2": "#398280",
     "CMIT": "#98719f",
     "PERS": "#d08341",
@@ -28,7 +28,6 @@ TOPICS = {
     "WARN": "#d08341",
     "ERRO": "#fe2626",
     "TRCE": "#fe2626",
-    "LOG1": "#ff0000"
 }
 # fmt: on
 

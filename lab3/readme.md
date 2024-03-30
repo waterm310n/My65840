@@ -336,19 +336,17 @@ Failed test TestFigure8Unreliable3C - 20240326_200017/TestFigure8Unreliable3C_57
 └─────────────────────────┴────────┴───────┴──────────────┘
 
 # 整个3C的测试
-$ VERBOSE=1 python3 dTest.py -p 2 3C
-Failed test 3C - 20240326_202931/3C_1.log
-Failed test 3C - 20240326_202931/3C_2.log
+$ VERBOSE=1 python3 dTest.py -p 2 -n 20 3C
 ┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━┓
 ┃ Test ┃ Failed ┃ Total ┃           Time ┃
 ┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━┩
-│ 3C   │      2 │    10 │ 208.89 ± 13.19 │
+│ 3C   │      0 │    20 │ 216.96 ± 16.31 │
 └──────┴────────┴───────┴────────────────┘
 ```
 ### Part D log compaction
 
 遇到的第一个问题：push apply要求不能加锁，否则会死锁。
-原因：执行Snapshot的时候，需要用到锁，而在push apply的时候已经拥有锁了，于是造成了死锁，因此push apply没办法加锁。
+原因：执行Snapshot的时候，需要用到锁，而在push apply的时候已经拥有锁了，于是造成了死锁，因此push apply没办法加锁。(因为applyCh是一个无缓冲的管道，如果在apply的时候给mu上锁了，而此时上层服务暂时中断了从applyCh获取ApplyMsg，在调用Snapshot，导致死锁)
 解决方法：将applier方法修改为不加锁的版本。
 ```go
 // 异步应用日志条目协程
@@ -377,7 +375,27 @@ func (rf *Raft) applier() {
 }
 ```
 
-不稳定通过TestSnapshotBasic3D
+当前的情况在于效率太低了
+```bash
+go test -run 3D
+Test (3D): snapshots basic ...
+  ... Passed --   4.0  3  142   52023  230
+Test (3D): install snapshots (disconnect) ...
+--- FAIL: TestSnapshotInstall3D (123.99s)
+    config.go:335: test took longer than 120 seconds
+Test (3D): install snapshots (disconnect+unreliable) ...
+--- FAIL: TestSnapshotInstallUnreliable3D (136.98s)
+    config.go:335: test took longer than 120 seconds
+panic: runtime error: slice bounds out of range [-18:]
+
+goroutine 18214 [running]:
+6.5840/raft.(*Raft).applier(0xc0005661e0)
+        /home/chenhao/6.5840/src/raft/raft.go:711 +0x230
+created by 6.5840/raft.Make in goroutine 17318
+        /home/chenhao/6.5840/src/raft/raft.go:87 +0x5a5
+exit status 2
+FAIL    6.5840/raft     278.924s
+```
 
 
 ## 参考实现

@@ -39,7 +39,27 @@ type LogEntry struct {
 	Index   int         // 日志条目所对应的下标，需要记录这个原因是3D应用快照的时候，log对应的下标不再是CommandIndex
 }
 
-// GC友好函数，感觉太耗时间了，不是很有意义？
+// GC友好函数
 func shrinkEntriesArray(log []LogEntry) []LogEntry {
 	return append([]LogEntry{}, log...)
+}
+
+func maxInt(a int, nums ...int) int {
+	maxNum := a
+	for _, num := range nums {
+		if num > maxNum {
+			maxNum = num
+		}
+	}
+	return maxNum
+}
+
+func minInt(a int, nums ...int) int {
+	minNum := a
+	for _, num := range nums {
+		if num < minNum {
+			minNum = num
+		}
+	}
+	return minNum
 }
