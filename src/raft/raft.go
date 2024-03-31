@@ -420,7 +420,7 @@ func (rf *Raft) broadcast(broadcastType BroadcastType) {
 				continue
 			}
 			// go rf.heartBeat(peer)
-			go rf.replicateOneRound(peer, true)
+			go rf.replicateOneRound(peer)
 		}
 	case REPLICATE:
 		// DPrintf(dLeader, "S%d broadcast Log at T%d", rf.me, rf.CurrentTerm)
@@ -497,7 +497,7 @@ func (rf *Raft) startElect() {
 }
 
 // 向peer发送一轮日志
-func (rf *Raft) replicateOneRound(peer int, hearbeat bool) {
+func (rf *Raft) replicateOneRound(peer int) {
 	rf.mu.RLock()
 	if rf.state != LEADER { //不是Leader了
 		rf.mu.RUnlock()
@@ -520,7 +520,7 @@ func (rf *Raft) replicateOneRound(peer int, hearbeat bool) {
 		reply := &AppendEntriesReply{}
 		if rf.sendAppendEntries(peer, args, reply) {
 			rf.mu.Lock()
-			rf.handleReplicateOneRoundResponse(peer, args, reply, hearbeat)
+			rf.handleReplicateOneRoundResponse(peer, args, reply)
 			rf.mu.Unlock()
 		}
 	}
@@ -558,7 +558,7 @@ func (rf *Raft) hasBeenAppendedMajority(N int) bool {
 }
 
 // 处理复制日志响应
-func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply, heartbeat bool) {
+func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if args.Term != rf.CurrentTerm || rf.state != LEADER { // 移除过时的响应
 		return
 	}
@@ -571,20 +571,19 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 	if reply.Success { //发出去的日志已经被接收了
 		rf.matchIndex[peer] = maxInt(rf.matchIndex[peer], args.PrevLogIndex+len(args.Entries))
 		rf.nextIndex[peer] = maxInt(rf.nextIndex[peer], args.PrevLogIndex+len(args.Entries)+1)
-		if !heartbeat {
-			left, right := rf.commitIndex+1, rf.getLastLog().Index
-			for N := right; N >= left; N-- {
-				if rf.hasBeenAppendedMajority(N) {
-					rf.commitIndex = maxInt(rf.commitIndex, N)
-					rf.applyCond.Signal()
-					break //成功了就可以直接退出了
-				}
+		// 无需区分heartbeat和appendEntries，因为提交本地日志可以由rf.Log[N-firstIndex].Term == rf.CurrentTerm保证
+		left, right := rf.commitIndex+1, rf.getLastLog().Index
+		for N := right; N >= left; N-- {
+			if rf.hasBeenAppendedMajority(N) {
+				rf.commitIndex = maxInt(rf.commitIndex, N)
+				rf.applyCond.Signal()
+				break //成功了就可以直接退出了
 			}
 		}
 	} else { //更新nextIndex
 		if reply.XTerm == -1 { //Follower的日志太短了
 			rf.nextIndex[peer] = reply.XLen
-			DPrintf(dLeader, "S%d conflict with S%d,nextIndex: %d", rf.me, peer,rf.nextIndex[peer])
+			DPrintf(dLeader, "S%d conflict with S%d,nextIndex: %d", rf.me, peer, rf.nextIndex[peer])
 			return
 		}
 		i := sort.Search(len(rf.Log), func(i int) bool { // 二分查找优化
@@ -595,7 +594,7 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 		} else { //如果日志中不存在XTerm
 			rf.nextIndex[peer] = reply.XIndex
 		}
-		DPrintf(dLeader, "S%d conflict with S%d,nextIndex: %d", rf.me, peer,rf.nextIndex[peer])
+		DPrintf(dLeader, "S%d conflict with S%d,nextIndex: %d", rf.me, peer, rf.nextIndex[peer])
 	}
 }
 
@@ -639,7 +638,7 @@ func (rf *Raft) replicator(peer int) {
 		for !rf.needReplicatingLog(peer) {
 			rf.replicatorCond[peer].Wait()
 		}
-		rf.replicateOneRound(peer, false)
+		rf.replicateOneRound(peer)
 	}
 }
 
