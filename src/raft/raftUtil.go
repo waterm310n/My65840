@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-const HEARTBEATETIME = time.Duration(100) * time.Millisecond //心跳发送时间间隔
+const HEARTBEATETIME = time.Duration(60) * time.Millisecond //心跳发送时间间隔
 
 // 随机的选举时间
 func randomizedElectionTimeout() time.Duration {
-	ms := 300 + (rand.Int63() % 600)
+	ms := 240 + (rand.Int63() % 720)
 	return time.Duration(ms) * time.Millisecond
 }
 

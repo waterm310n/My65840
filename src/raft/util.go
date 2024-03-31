@@ -59,8 +59,7 @@ func init() {
 // example : DPrintf(dTimer, "S%d Leader, checking heartbeats", rf.me)
 func DPrintf(topic logTopic, format string, a ...interface{}) {
 	if debugVerbosity >= 1 {
-		time := time.Since(debugStart).Microseconds()
-		time /= 100
+		time := time.Since(debugStart).Milliseconds()
 		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
 		format = prefix + format
 		log.Printf(format, a...)

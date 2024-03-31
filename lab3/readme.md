@@ -375,26 +375,49 @@ func (rf *Raft) applier() {
 }
 ```
 
+遇到的第二个问题就是效率：实验要求每个测试最长不超过120s，导致我经常超时，对此我进行了一些效率上的改进
+1. 使用二分快速Back Up
+2. Candidate请求投票的时候，对于每个peer只发送一次RPC请求
+3. 发送心跳的时候，不再不携带日志了，而是携带日志，这样可以更快的同步日志。
+
+通过以上三种改进，终于可以-p 50 -n 1000的时候通过前3个测试了，但是对于3C依然还有优化空间。
+```bash
+VERBOSE=1 python3 dTest.py -p 50 -n 1000 3A
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃         Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━┩
+│ 3A   │      0 │  1000 │ 14.20 ± 0.68 │
+└──────┴────────┴───────┴──────────────┘
+VERBOSE=1 python3 dTest.py -p 50 -n 1000 3B
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃         Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━┩
+│ 3B   │      0 │  1000 │ 47.41 ± 3.16 │
+└──────┴────────┴───────┴──────────────┘
+# 之前我的选举都是一直发送RPC来保证能够收到回复，但事实证明这是完全不必要的。
+# 选举的时候，Candidate对每一个peer发送一次请求即可，发送多了完全是浪费时间。
+# 修改后，直接可以-p 50 -n 1000的通过，并且时间消耗只有157秒，优化了整整50秒的时间。
+VERBOSE=1 python3 dTest.py -p 50 -n 1000 3C
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃          Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ 3C   │      0 │  1000 │ 154.87 ± 7.07 │
+└──────┴────────┴───────┴───────────────┘
+```
+
 当前的情况在于效率太低了
 ```bash
 go test -run 3D
 Test (3D): snapshots basic ...
-  ... Passed --   4.0  3  142   52023  230
+  ... Passed --   2.8  3  152   54763  233
 Test (3D): install snapshots (disconnect) ...
---- FAIL: TestSnapshotInstall3D (123.99s)
+--- FAIL: TestSnapshotInstall3D (134.60s)
     config.go:335: test took longer than 120 seconds
 Test (3D): install snapshots (disconnect+unreliable) ...
---- FAIL: TestSnapshotInstallUnreliable3D (136.98s)
-    config.go:335: test took longer than 120 seconds
-panic: runtime error: slice bounds out of range [-18:]
-
-goroutine 18214 [running]:
-6.5840/raft.(*Raft).applier(0xc0005661e0)
-        /home/chenhao/6.5840/src/raft/raft.go:711 +0x230
-created by 6.5840/raft.Make in goroutine 17318
-        /home/chenhao/6.5840/src/raft/raft.go:87 +0x5a5
-exit status 2
-FAIL    6.5840/raft     278.924s
+  ... Passed --  104.1  3 3746 1181903  362
+Test (3D): install snapshots (crash) ...
+^Csignal: interrupt
+FAIL    6.5840/raft     258.657s
 ```
 
 
