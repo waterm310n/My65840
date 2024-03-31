@@ -128,7 +128,7 @@ func (rf *Raft) encodeRaftState() []byte {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	defer DPrintf(dLog, "S%d persist at T%d,votedFor:S%d,lastLog:{%v}", rf.me, rf.CurrentTerm, rf.VotedFor, rf.getLastLog())
-	rf.persister.Save(rf.encodeRaftState(),rf.persister.ReadSnapshot())
+	rf.persister.Save(rf.encodeRaftState(), rf.persister.ReadSnapshot())
 }
 
 // 取回持久化的raft数据
@@ -226,20 +226,11 @@ type AppendEntriesArgs struct {
 }
 
 // 创建AppendEntries，heartbeat表示是否为心跳创建
-func (rf *Raft) createAppendEntriesArgs(prevLogIndex int, heartbeat bool) *AppendEntriesArgs {
+func (rf *Raft) createAppendEntriesArgs(prevLogIndex int) *AppendEntriesArgs {
 	index := 0 //找到prevLogIndex对应日志中对应的下标
 	for i := range rf.Log {
 		if rf.Log[i].Index == prevLogIndex {
 			index = i
-		}
-	}
-	if heartbeat {
-		return &AppendEntriesArgs{Term: rf.CurrentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  rf.Log[index].Term,
-			Entries:      nil,
-			LeaderCommit: rf.commitIndex,
 		}
 	}
 	return &AppendEntriesArgs{Term: rf.CurrentTerm,
@@ -523,7 +514,7 @@ func (rf *Raft) replicateOneRound(peer int, hearbeat bool) {
 			rf.mu.Unlock()
 		}
 	} else {
-		args := rf.createAppendEntriesArgs(prevLogIndex, hearbeat)
+		args := rf.createAppendEntriesArgs(prevLogIndex)
 		DPrintf(dLeader, "S%d -> S%d AE sending {PLI:%d,PLT:%d} at T%d", rf.me, peer, prevLogIndex, args.PrevLogTerm, rf.CurrentTerm)
 		rf.mu.RUnlock()
 		reply := &AppendEntriesReply{}
@@ -540,7 +531,8 @@ func (rf *Raft) handleInstallSnapshotResponse(peer int, args *InstallSnapshotArg
 		return
 	}
 	if reply.Term > rf.CurrentTerm { // Follower的任期大于发送时的任期，直接结束
-		rf.CurrentTerm, rf.state, rf.VotedFor = reply.Term, FOLLOWER, -1
+		rf.changeState(FOLLOWER)
+		rf.CurrentTerm, rf.VotedFor = reply.Term, -1
 		rf.persist()
 		return
 	}
@@ -571,7 +563,8 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 		return
 	}
 	if reply.Term > rf.CurrentTerm { // Follower的任期大于发送时的任期，直接结束
-		rf.CurrentTerm, rf.state, rf.VotedFor = reply.Term, FOLLOWER, -1
+		rf.changeState(FOLLOWER)
+		rf.CurrentTerm, rf.VotedFor = reply.Term, -1
 		rf.persist()
 		return
 	}
@@ -589,19 +582,20 @@ func (rf *Raft) handleReplicateOneRoundResponse(peer int, args *AppendEntriesArg
 			}
 		}
 	} else { //更新nextIndex
-		DPrintf(dLeader, "S%d know Conflict with S%d", rf.me, peer)
 		if reply.XTerm == -1 { //Follower的日志太短了
-			rf.nextIndex[peer] = maxInt(reply.XLen, rf.matchIndex[peer]+1)
+			rf.nextIndex[peer] = reply.XLen
+			DPrintf(dLeader, "S%d conflict with S%d,nextIndex: %d", rf.me, peer,rf.nextIndex[peer])
 			return
 		}
 		i := sort.Search(len(rf.Log), func(i int) bool { // 二分查找优化
 			return rf.Log[i].Term > reply.XTerm
 		}) // i是日志中，第一个下标的Term大于XTerm的下标
 		if i > 0 && rf.Log[i-1].Term == reply.XTerm { //如果当前日志存在XTerm
-			rf.nextIndex[peer] = maxInt(rf.Log[i].Index, rf.matchIndex[peer]+1) //设nextIndex为当前XTerm的最后一个日志
+			rf.nextIndex[peer] = rf.Log[i].Index //设nextIndex为当前XTerm的最后一个日志
 		} else { //如果日志中不存在XTerm
-			rf.nextIndex[peer] = maxInt(reply.XIndex, rf.matchIndex[peer]+1)
+			rf.nextIndex[peer] = reply.XIndex
 		}
+		DPrintf(dLeader, "S%d conflict with S%d,nextIndex: %d", rf.me, peer,rf.nextIndex[peer])
 	}
 }
 

@@ -404,20 +404,37 @@ VERBOSE=1 python3 dTest.py -p 50 -n 1000 3C
 │ 3C   │      0 │  1000 │ 154.87 ± 7.07 │
 └──────┴────────┴───────┴───────────────┘
 ```
+经过上述优化后，3C实验已经可以160s完成了,但是和样例相比，时间仍然不够。经过观察可以发现，主要是more persistence的问题，我比样例的时间多了一倍。
+打印日志，仔细排查发现了问题在于我的心跳不携带日志。考虑下面的情况
+1. S1 是一开始的Leader。那么S1,S0,S4共识了两次，日志长度为2 分别是\{ \{11 1\} \{12 2\} \}，
+2. 而S2，S3因为中途断开，日志长度为1 \{11 1\}。接着S1,S0断开网络。
+3. 接着S2,S3,S4相互连接，那么S4最后选举成功，成为了新的Leader，接着S2,S3,S4共识了日志13，下标是3。接着S0与S1重新联回网络。
+4. 然后重复1，2，3的操作。
+问题出现在了重复操作1钟，我发现直到日志14在S4当中的下标是6的时，S0,S1才与S4同步成功。这想当于config.one超时了3次，总共过去了6秒钟。而在这期间S4从来不认为S1,S2与它存在日志冲突。
+具体原因仍在调查中，但是我想着直接心跳上添加上日志，这样可以直接更快的同步Leader与Follower，于是就再也没有出现该问题了。
+
+```bash
+VERBOSE=1 python3 dTest.py -p 50 -n 1000 3A 3B 3C
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃          Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ 3A   │      0 │  1000 │  14.20 ± 0.63 │
+│ 3B   │      0 │  1000 │  41.41 ± 1.88 │
+│ 3C   │      0 │  1000 │ 124.83 ± 5.34 │
+└──────┴────────┴───────┴───────────────┘
+```
 
 当前的情况在于效率太低了
 ```bash
-go test -run 3D
+ go test -run 3D
 Test (3D): snapshots basic ...
-  ... Passed --   2.8  3  152   54763  233
+  ... Passed --   2.7  3  146   52713  227
 Test (3D): install snapshots (disconnect) ...
---- FAIL: TestSnapshotInstall3D (134.60s)
-    config.go:335: test took longer than 120 seconds
+  ... Passed --  62.8  3 2483  819708  341
 Test (3D): install snapshots (disconnect+unreliable) ...
-  ... Passed --  104.1  3 3746 1181903  362
+  ... Passed --  56.6  3 2134  741858  309
 Test (3D): install snapshots (crash) ...
-^Csignal: interrupt
-FAIL    6.5840/raft     258.657s
+panic: runtime error: slice bounds out of range [-8:]
 ```
 
 
