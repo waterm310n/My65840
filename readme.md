@@ -6,10 +6,10 @@
 
 - [x] Lab1
 - [x] Lab2
-- [ ] Lab3
+- [x] Lab3
   - [x] 3a
   - [x] 3b
   - [x] 3c
-  - [ ] 3d
+  - [x] 3d
 - [ ] Lab4
 - [ ] Lab5

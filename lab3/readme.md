@@ -424,18 +424,7 @@ VERBOSE=1 python3 dTest.py -p 50 -n 1000 3A 3B 3C
 └──────┴────────┴───────┴───────────────┘
 ```
 
-当前的情况在于效率太低了
-```bash
- go test -run 3D
-Test (3D): snapshots basic ...
-  ... Passed --   2.7  3  146   52713  227
-Test (3D): install snapshots (disconnect) ...
-  ... Passed --  62.8  3 2483  819708  341
-Test (3D): install snapshots (disconnect+unreliable) ...
-  ... Passed --  56.6  3 2134  741858  309
-Test (3D): install snapshots (crash) ...
-panic: runtime error: slice bounds out of range [-8:]
-```
+上述修改后，对于Lab4，需要注意的点在于Unreliable+crash环境中，会出现请求的prevLogIndex小于当前的
 
 
 ## 参考实现
