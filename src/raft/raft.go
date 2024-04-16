@@ -15,6 +15,7 @@ type ApplyMsg struct {
 	CommandValid bool        //如果命令已经被提交了，返回True
 	Command      interface{} //要执行的命令
 	CommandIndex int         //下标
+	CommandTerm  int         //任期,Lab3A实验使用
 
 	// For 2D:
 	SnapshotValid bool
@@ -35,13 +36,13 @@ type Raft struct {
 	CurrentTerm int        //服务器已经见识过的任期（在启动时初始化为0，单调递增）
 	VotedFor    int        //当前任期，本服务器投票的候选人id，（如果没有则为空，实际实现中如果没有我设为-1）
 	Log         []LogEntry //日志条目；每个条目包含命令和从领导者收到条目的任期，索引从1开始
-	// 论文不要求持久化的变量，考虑到snapshot的影响，我把它持久化了
-	CommitIndex int //已知的已提交的最高日志条目的索引（初始化为 0，单调递增）
-	LastApplied int //应用于状态机的最高日志条目的索引（初始化为 0，单调递增）
+
 	//非持久化的变量
-	state     RaftState     //表示当前节点状态
-	applyCh   chan ApplyMsg //当日志条目提交时，向管道写入ApplyMsg
-	applyCond *sync.Cond    //用于应用日志
+	CommitIndex int           //已知的已提交的最高日志条目的索引（初始化为 0，单调递增）
+	LastApplied int           //应用于状态机的最高日志条目的索引（初始化为 0，单调递增）
+	state       RaftState     //表示当前节点状态
+	applyCh     chan ApplyMsg //当日志条目提交时，向管道写入ApplyMsg
+	applyCond   *sync.Cond    //用于应用日志
 	//非持久化的Leader使用的变量
 	nextIndex      []int        //对于每个服务器，要发送到该服务器的下一条日志条目的索引（初始化为领导者的最后一条日志索引 + 1）
 	matchIndex     []int        //在每个服务器上已知已经复制的最高日志条目的索引（初始化为 0，单调递增）
@@ -267,12 +268,9 @@ type AppendEntriesReply struct {
 // 日志是否匹配
 func (rf *Raft) isLogMatched(requestPrevLogTerm, requestPrevLogIndex int) bool {
 	firstIndex, lastIndex := rf.getFirstLog().Index, rf.getLastLog().Index
-	if requestPrevLogIndex <= firstIndex { // 这里如果取小于号会出错
+	if requestPrevLogIndex < firstIndex {
 		return true
 	}
-	// if requestPrevLogIndex == firstIndex {
-
-	// }
 	return requestPrevLogIndex <= lastIndex && rf.Log[requestPrevLogIndex-firstIndex].Term == requestPrevLogTerm
 }
 
@@ -389,8 +387,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	if args.LastIncludedIndex > rf.getLastLog().Index {
 		rf.Log = []LogEntry{{args.LastIncludedTerm, nil, args.LastIncludedIndex}}
-	} else {
+	} else if rf.Log[args.LastIncludedIndex-rf.getFirstLog().Index].Term == args.LastIncludedTerm {
+		// 当且仅当此rf.Log对应与LastIncludedIndex的日志条目相符时，才保留日志
 		rf.Log = shrinkEntriesArray(rf.Log[args.LastIncludedIndex-rf.getFirstLog().Index:])
+	} else {
+		rf.Log = []LogEntry{{args.LastIncludedTerm, nil, args.LastIncludedIndex}}
 	}
 	// 更新lastApplied与commitIndex
 	rf.CommitIndex = args.LastIncludedIndex
@@ -690,6 +691,7 @@ func (rf *Raft) applier() {
 				CommandValid: true,
 				Command:      entry.Command,
 				CommandIndex: entry.Index,
+				CommandTerm:  entry.Term,
 			}
 		}
 		rf.applyCond.L.Lock()
