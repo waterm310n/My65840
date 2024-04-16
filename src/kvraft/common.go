@@ -1,33 +1,31 @@
 package kvraft
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK             = "OK"             //如果状态机应用了命令，则返回OK
+	ErrNoKey       = "ErrNoKey"       //Get错误
+	ErrWrongLeader = "ErrWrongLeader" //当前Sever不是Leader
+	ErrTimeOut = "ErrTimeOut" //服务器超时（可能的原因：服务器当前被分区了）
 )
 
-type Err string
+type status string
 
-// Put or Append
-type PutAppendArgs struct {
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+type CommandOp string
+
+const ( 
+	PutOp CommandOp = "Put"
+	AppendOp CommandOp = "Append"
+	GetOp CommandOp = "Get"
+)
+
+type CommandArgs struct{
+	Key         string
+	Value       string
+	Op          CommandOp // "Put" or "Append"
+	ClientId int64 //客户端Id
+	SequenceNum int64  // 用于去重
 }
 
-type PutAppendReply struct {
-	Err Err
-}
-
-type GetArgs struct {
-	Key string
-	// You'll have to add definitions here.
-}
-
-type GetReply struct {
-	Err   Err
-	Value string
+type CommandReply struct {
+	Status     status //如果状态机应用了命令，则返回OK
+	Response string // 如果状态OK，回复状态机的输出
 }
