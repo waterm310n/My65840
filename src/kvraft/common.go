@@ -1,5 +1,7 @@
 package kvraft
 
+import "fmt"
+
 const (
 	OK             = "OK"             //如果状态机应用了命令，则返回OK
 	ErrNoKey       = "ErrNoKey"       //Get错误
@@ -25,7 +27,15 @@ type CommandArgs struct{
 	SequenceNum int64  // 用于去重
 }
 
+func (args *CommandArgs) String() string {
+	return fmt.Sprintf("{K:%s,V:%s,Op:%v,CID:%d,SN:%d}",args.Key,args.Value,args.Op,args.ClientId,args.SequenceNum)
+}
+
 type CommandReply struct {
 	Status     status //如果状态机应用了命令，则返回OK
 	Response string // 如果状态OK，回复状态机的输出
+}
+
+func (reply *CommandReply) String() string {
+	return fmt.Sprintf("{R:%s,S:%s}",reply.Response,reply.Status)
 }

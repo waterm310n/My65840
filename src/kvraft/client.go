@@ -51,16 +51,17 @@ func (ck *Clerk) Append(key string, value string) {
 
 func (ck *Clerk) Command(args *CommandArgs) string {
 	ck.commandSequnceNum += 1
-	args.SequenceNum = ck.commandSequnceNum
+	args.ClientId,args.SequenceNum = ck.clienId,ck.commandSequnceNum
 	ok := false
 	for {
 		reply := &CommandReply{}
-		DPrintf(dClient,"(C%d)->(S%d) {K:%s,V:%s,Op:%v,SN:%d}",ck.clienId,ck.curLeader,args.Key,args.Value,args.Op,args.SequenceNum)
+		DPrintf(dClient,"C%d request %v",ck.clienId,args)
 		ok = ck.servers[ck.curLeader].Call("KVServer.Command",args,reply)
 		if !ok || reply.Status == ErrWrongLeader || reply.Status == ErrTimeOut {
 			ck.curLeader = (ck.curLeader+1)%len(ck.servers) //循环遍历，直到找到可用的服务器
 			continue
 		}
+		DPrintf(dClient,"C%d request %v get Response %v",ck.clienId,args,reply)
 		return reply.Response
 	}
 }
