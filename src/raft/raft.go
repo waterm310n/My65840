@@ -164,6 +164,11 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+// 用于Lab4b，获取Raft包括日志的大小
+func (rf *Raft) RaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
 // 快照函数，snapshot由状态机提供
 func (rf *Raft) Snapshot(lastIncludedIndex int, snapshot []byte) {
 	rf.mu.Lock()
@@ -380,11 +385,15 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	rf.state = FOLLOWER
 	rf.electionTimer.Reset(randomizedElectionTimeout())
-	// 如果当前commitIndex大于等于LastIncludedIndex，则不做处理
-	if args.LastIncludedIndex <= rf.CommitIndex {
+	// 如果当前commitIndex大于等于LastIncludedIndex，则不做处理，因为未来Server自己把日志提交后就可以更新快照了。
+	// 或之后的条件是在Lab4b实现后新增，这是因为当前Server已经自己拍摄了一个快照
+	// 而Leader发送的快照太旧了，所以这里可以直接返回，等Leader的快照足够新后再接收快照
+	if args.LastIncludedIndex <= rf.CommitIndex || args.LastIncludedIndex <= rf.getFirstLog().Index{
 		return
 	}
 
+	// Lab4b 发现的情况 DPrintf(dSnap,"S%d index:%d,lastIncludedIndex:%d,firstIndex:%d",rf.me,args.LastIncludedIndex-rf.getFirstLog().Index,args.LastIncludedIndex,rf.getFirstLog().Index)
+	// 如果LastIncludedIndex的下标比当前日志的index更大，直接创建新的日志
 	if args.LastIncludedIndex > rf.getLastLog().Index {
 		rf.Log = []LogEntry{{args.LastIncludedTerm, nil, args.LastIncludedIndex}}
 	} else if rf.Log[args.LastIncludedIndex-rf.getFirstLog().Index].Term == args.LastIncludedTerm {

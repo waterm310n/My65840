@@ -126,4 +126,52 @@ ok      6.5840/kvraft   239.577s
 
 ### 实验难点分析
 
+问题：状态机的哪些数据需要保存？
+答：状态机本身的KV存储肯定是需要保存成为快照的，同时去重用的哈希Map也需要保存为快照，否则就会出现重复请求导致错误。
+
+一个关于gob的知识点：如何对interface类型进行编程？使用register进行注册，同时对encode和decode进行包装，保证参数类型是interface。具体参考[GO GOB DOC](https://pkg.go.dev/encoding/gob#example-package-Interface)
+
+在本次实验我修改了之前Server是否接收快照的判断语句，也就是InstallSnapShot的代码。具体可见如下注释。
+```go
+// 如果当前commitIndex大于等于LastIncludedIndex，则不做处理，因为未来Server自己把日志提交后就可以更新快照了。
+// 或之后的条件是在Lab4b实现后新增，这是因为当前Server已经自己拍摄了一个快照
+// 而Leader发送的快照太旧了，所以这里可以直接返回，等Leader的快照足够新后再接收快照
+if args.LastIncludedIndex <= rf.CommitIndex || args.LastIncludedIndex <= rf.getFirstLog().Index{
+  return
+}
+```
+
 ### 实验结果
+
+```bash
+VERBOSE=2 python3 dTest.py -p 50 -n 250  4B
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃          Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ 4B   │      0 │   250 │ 141.21 ± 1.68 │
+└──────┴────────┴───────┴───────────────┘
+```
+单一运行时各个test的测试时间
+```bash
+$ go test -run 4B
+Test: InstallSnapshot RPC (4B) ...
+  ... Passed --   3.1  3 18128   63
+Test: snapshot size is reasonable (4B) ...
+  ... Passed --   0.4  3  9691  800
+Test: ops complete fast enough (4B) ...
+  ... Passed --   0.4  3 10854    0
+Test: restarts, snapshots, one client (4B) ...
+  ... Passed --  21.6  5 316822 56985
+Test: restarts, snapshots, many clients (4B) ...
+  ... Passed --  20.5  5 339882 76403
+Test: unreliable net, snapshots, many clients (4B) ...
+  ... Passed --  15.7  5  8443 1581
+Test: unreliable net, restarts, snapshots, many clients (4B) ...
+  ... Passed --  21.4  5  9470 1607
+Test: unreliable net, restarts, partitions, snapshots, many clients (4B) ...
+  ... Passed --  27.1  5  7540 1045
+Test: unreliable net, restarts, partitions, snapshots, random keys, many clients (4B) ...
+  ... Passed --  28.7  7 19008 2716
+PASS
+ok      6.5840/kvraft   138.860s
+```

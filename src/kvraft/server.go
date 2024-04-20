@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"fmt"
 
 	"sync"
@@ -32,27 +33,27 @@ type KVStateMachine interface {
 
 // 基于内存的KV存储
 type MemKV struct {
-	kvMp map[string]string
+	KVMp map[string]string
 }
 
 func newMemKV() *MemKV {
 	return &MemKV{
-		kvMp: make(map[string]string),
+		KVMp: make(map[string]string),
 	}
 }
 
 func (mkv *MemKV) Put(key string, value string) error {
-	mkv.kvMp[key] = value
+	mkv.KVMp[key] = value
 	return nil
 }
 
 func (mkv *MemKV) Append(key string, value string) error {
-	mkv.kvMp[key] += value
+	mkv.KVMp[key] += value
 	return nil
 }
 
 func (mkv *MemKV) Get(key string) (value string, err error) {
-	if value, ok := mkv.kvMp[key]; ok {
+	if value, ok := mkv.KVMp[key]; ok {
 		return value, nil
 	}
 	return "", fmt.Errorf(ErrNoKey)
@@ -60,13 +61,13 @@ func (mkv *MemKV) Get(key string) (value string, err error) {
 
 // 命令结果
 type CommandResult struct {
-	sequenceNum int64  // 命令序列号
-	status      status //如果状态机应用了命令，则返回OK
-	response    string // 如果状态OK，回复状态机的输出
+	SequenceNum int64  // 命令序列号
+	Status      status //如果状态机应用了命令，则返回OK
+	Response    string // 如果状态OK，回复状态机的输出
 }
 
 func (cr *CommandResult) String() string {
-	return fmt.Sprintf("{SN:%d,STATUS:%s,R:%s}", cr.sequenceNum, cr.status, cr.response)
+	return fmt.Sprintf("{SN:%d,STATUS:%s,R:%s}", cr.SequenceNum, cr.Status, cr.Response)
 }
 
 // 唤醒协程时的消息
@@ -82,7 +83,7 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
+	maxraftstate int // -1表示不使用快照，否则表示raft状态的最大值
 
 	lastApplied    int // 保证状态机不会回退
 	KVstateMachine KVStateMachine
@@ -93,9 +94,9 @@ type KVServer struct {
 }
 
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
-	// call labgob.Register on structures you want
-	// Go's RPC library to marshall/unmarshall.
+	// 因为使用了接口，所以此处需要先在gob注册接口对应的实际类型
 	labgob.Register(Command{})
+	labgob.Register(&MemKV{})
 	kv := &KVServer{
 		me:             me,
 		maxraftstate:   maxraftstate,
@@ -114,7 +115,7 @@ func (kv *KVServer) isDuplicate(clientId int64, sequenceNum int64) bool {
 	if _, ok := kv.duplicateMp[clientId]; !ok { //当前idMp中没有存储clientId
 		return false
 	} else { // 当前idMp中存储了clientId
-		if sequenceNum <= kv.duplicateMp[clientId].sequenceNum {
+		if sequenceNum <= kv.duplicateMp[clientId].SequenceNum {
 			DPrintf(dServer, "KVS%d recevie %v and duplicate", kv.me, sequenceNum)
 			return true
 		}else{
@@ -126,15 +127,15 @@ func (kv *KVServer) isDuplicate(clientId int64, sequenceNum int64) bool {
 // 更新idMp
 func (kv *KVServer) updateDuplicateMp(clientId int64, sequenceNum int64, status status, response string) {
 	if _, ok := kv.duplicateMp[clientId]; ok { //已经存在，原地修改内容
-		kv.duplicateMp[clientId].sequenceNum = sequenceNum
-		kv.duplicateMp[clientId].status = status
-		kv.duplicateMp[clientId].response = response
+		kv.duplicateMp[clientId].SequenceNum = sequenceNum
+		kv.duplicateMp[clientId].Status = status
+		kv.duplicateMp[clientId].Response = response
 	} else { //clientId不在表中，创建内容
 		DPrintf(dServer,"KVS%d create C%d in duplicateMp",kv.me,clientId)
 		kv.duplicateMp[clientId] = &CommandResult{
-			sequenceNum: sequenceNum,
-			status:      status,
-			response:    response,
+			SequenceNum: sequenceNum,
+			Status:      status,
+			Response:    response,
 		}
 	}
 }
@@ -169,7 +170,7 @@ func (kv *KVServer) Command(args *CommandArgs, reply *CommandReply) {
 	defer DPrintf(dServer, "KVS%d process args %v with reply %v", kv.me, args, reply)
 	kv.lock("Command isDuplicate")
 	if kv.isDuplicate(args.ClientId, args.SequenceNum) {
-		reply.Status, reply.Response = kv.duplicateMp[args.ClientId].status, kv.duplicateMp[args.ClientId].response
+		reply.Status, reply.Response = kv.duplicateMp[args.ClientId].Status, kv.duplicateMp[args.ClientId].Response
 		kv.unlock("Command isDuplicate")
 		return
 	}
@@ -194,6 +195,57 @@ func (kv *KVServer) Command(args *CommandArgs, reply *CommandReply) {
 		delete(kv.notifyChMp, commandIndex)
 	}()
 }
+
+// 判断是否需要创建快照
+func (kv *KVServer) needTakeSnapShot() bool {
+	if kv.maxraftstate == -1 {
+		return false
+	}
+	if kv.maxraftstate <= kv.rf.RaftStateSize() {
+		return true
+	}
+	return false
+}
+
+// 判断是否要恢复快照
+func (kv *KVServer) needRestoreSnapShot(snapshotTerm int,snapshotIndex int) bool {
+	curTerm , _ := kv.rf.GetState()
+	// 显然如果快照的任期小于当前的任期或者快照的下标小于当前已经应用的下标是不需要读取快照的
+	return curTerm >= snapshotTerm && snapshotIndex > kv.lastApplied 
+}
+
+// 编码快照
+func (kv *KVServer) encodeSnapShot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	// Encode与decode的顺序要按照队列顺序对应
+	kv.interfaceEncodeKVStateMachine(e,kv.KVstateMachine)
+	e.Encode(kv.duplicateMp) // 肯定是要存储的，不然无法去重
+	return w.Bytes()
+}
+
+// 创建快照
+func (kv *KVServer) takeSnapShot() {
+	kv.rf.Snapshot(kv.lastApplied,kv.encodeSnapShot())
+}
+
+// 回复快照
+func (kv *KVServer) restoreSnapShot(snapshot []byte){
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var KVstateMachine KVStateMachine
+	var duplicateMp map[int64]*CommandResult
+	KVstateMachine,err := kv.interfaceDecodeKVStateMachine(d)
+	if err != nil {
+		DPrintf(dServer, "KVS%d can not restore from Snapshot %v %v", kv.me,KVstateMachine)
+	}
+	if d.Decode(&duplicateMp) != nil {
+		DPrintf(dServer, "KVS%d can not restore from Snapshot %v %v", kv.me,duplicateMp)
+	}
+	kv.duplicateMp = duplicateMp
+	kv.KVstateMachine = KVstateMachine
+}
+
 
 func (kv *KVServer) applier() {
 	for !kv.killed() {
@@ -226,9 +278,17 @@ func (kv *KVServer) applier() {
 				ch := kv.getNotifyCh(m.CommandIndex)
 				ch <- &NotifyMsg{response: response, status: status}
 			}
+			if kv.needTakeSnapShot() {
+				kv.takeSnapShot()
+			}
 			kv.unlock("applier commandValid")
 		} else if m.SnapshotValid {
-			panic(fmt.Sprintf("Unimplemented %v", m))
+			kv.lock("applier SnapshotValid")
+			if kv.needRestoreSnapShot(m.SnapshotTerm,m.SnapshotIndex){
+				kv.restoreSnapShot(m.Snapshot)
+				kv.lastApplied = m.SnapshotIndex
+			}
+			kv.unlock("applier SnapshotValid")
 		} else {
 			panic(fmt.Sprintf("Unexcepted Error due to %v", m))
 		}
@@ -256,4 +316,24 @@ func (kv *KVServer) unlock(s string) {
 	// DPrintf(dServer, "KVS%d try unlock during %s", kv.me, s)
 	kv.mu.Unlock()
 	// DPrintf(dServer, "KVS%d complete unlock during %s", kv.me, s)
+}
+
+// interfaceEncode 将值编码并保存到encoder.
+func (kv *KVServer) interfaceEncodeKVStateMachine(enc *labgob.LabEncoder, p KVStateMachine) (error){
+	err := enc.Encode(&p)
+	if err != nil {
+		DPrintf(dServer,"KVS%d encode: %v",kv.me,err)
+		return err
+	}
+	return nil
+}
+// interfaceDecode 解码接口的值并返回
+func (kv *KVServer) interfaceDecodeKVStateMachine(dec *labgob.LabDecoder) (KVStateMachine,error) {
+	var p KVStateMachine
+	err := dec.Decode(&p)
+	if err != nil {
+		DPrintf(dServer,"KVS%d decode: %v",kv.me,err)
+		return p,err
+	}
+	return p,nil
 }
