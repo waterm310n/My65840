@@ -175,3 +175,16 @@ Test: unreliable net, restarts, partitions, snapshots, random keys, many clients
 PASS
 ok      6.5840/kvraft   138.860s
 ```
+
+## 实验最终结果
+目前存在的问题是，当worker数量选择的过多的时候，4A中的`Test: ops complete fast enough (4A)`速度测试无法通过。主要的问题是apply的太慢了。
+
+```bash
+$ python3 dTest.py -p 50 -n 500 4A 4B
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Test ┃ Failed ┃ Total ┃          Time ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ 4A   │      0 │   500 │ 251.33 ± 2.30 │
+│ 4B   │      0 │   500 │ 141.79 ± 1.36 │
+└──────┴────────┴───────┴───────────────┘
+```
